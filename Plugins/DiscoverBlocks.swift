@@ -2,7 +2,6 @@
 //  Keep any changes in sync with that file!!!
 
 import Foundation
-import PackagePlugin
 
 /// Metadata and information about a discovered block
 struct BlockInfo {
@@ -162,17 +161,19 @@ private func getBlockInfo(at path: URL, into outputDirectory: URL) throws
 ///   - content: The file content to parse
 ///   - baseDirectory: The directory to resolve relative imports from
 /// - Returns: Array of URLs to imported files
-private func extractImports(from content: String, baseDirectory: URL) -> [URL] {
+func extractImports(from content: String, baseDirectory: URL) -> [URL] {
 	var imports: [URL] = []
 
-	// Regex patterns for different import styles
-	// Match: import ... from "./file" or import ... from './file'
-	let regex = #/import\s+[^\s]+\s+from\s+['\"](\.[^'\"]+)['\"]/#
+	// Regex to match all non-type import styles with relative paths
+	// Matches: import X from "./file", import { X } from "./file", import * as X from "./file"
+	// Excludes: import type { X } from "./file"
+	let regex = #/import\s+(?!type\s)(?:[^\s]+|\{[^}]+\}|\*\s+as\s+[^\s]+)\s+from\s+['\"](\.[^'\"]+)['\"]/#
 	let matches = content.matches(of: regex)
 
 	for match in matches {
-		let importPath = match.output.1
-		let resolvedURL = baseDirectory.appending(path: importPath)
+		let importPath = String(match.output.1)
+		// Normalize the path by resolving it and getting the standardized path
+		let resolvedURL = baseDirectory.appending(path: importPath).standardized
 		imports.append(resolvedURL)
 	}
 

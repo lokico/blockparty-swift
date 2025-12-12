@@ -1,0 +1,1 @@
+../../Plugins/DiscoverBlocks.swift
