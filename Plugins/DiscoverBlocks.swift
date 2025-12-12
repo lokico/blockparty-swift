@@ -8,31 +8,54 @@ import PackagePlugin
 struct BlockInfo {
 	let name: String
 	let path: URL
-	let dependencies: [URL]  // Files that are dependencies (index.ts/tsx, README.md, etc.)
+	let inputFiles: [URL]  // Build dependencies (index.ts/tsx, README.md, etc.)
+	let outputFiles: [URL]  // Bundle resources
 }
 
 /// Discovers all blocks in the target path
 /// - Parameter targetPath: The directory to search for blocks
 /// - Returns: Array of discovered block information
-func discoverBlocks(at targetPath: URL) throws -> [BlockInfo] {
+func discoverBlocks(at targetPath: URL, into outputDirectory: URL) throws
+	-> [BlockInfo]
+{
 	var blocks: [BlockInfo] = []
 
 	// Try to get block info for the target path itself
-	if let blockInfo = try getBlockInfo(at: targetPath) {
+	if let blockInfo = try getBlockInfo(at: targetPath, into: outputDirectory) {
 		blocks.append(blockInfo)
 		return blocks
 	}
 
-	// Check subdirectories for blocks
+	// Recursively check subdirectories for blocks
+	try discoverBlocksRecursive(
+		at: targetPath,
+		into: outputDirectory,
+		blocks: &blocks
+	)
+
+	return blocks
+}
+
+/// Recursively discovers blocks in subdirectories
+/// - Parameters:
+///   - dirPath: The directory to search
+///   - blocks: Array to accumulate discovered blocks
+private func discoverBlocksRecursive(
+	at dirPath: URL,
+	into outputDirectory: URL,
+	blocks: inout [BlockInfo]
+)
+	throws
+{
 	let fileManager = FileManager.default
 	guard
 		let entries = try? fileManager.contentsOfDirectory(
-			at: targetPath,
+			at: dirPath,
 			includingPropertiesForKeys: [.isDirectoryKey],
 			options: [.skipsHiddenFiles]
 		)
 	else {
-		return blocks
+		return
 	}
 
 	for entry in entries {
@@ -52,18 +75,31 @@ func discoverBlocks(at targetPath: URL) throws -> [BlockInfo] {
 			continue
 		}
 
-		if let blockInfo = try getBlockInfo(at: entry) {
+		if let blockInfo = try getBlockInfo(
+			at: entry,
+			into: outputDirectory.appending(
+				path: dirName,
+				directoryHint: .isDirectory
+			)
+		) {
 			blocks.append(blockInfo)
+		} else {
+			// If this directory is not a block, search its subdirectories
+			try discoverBlocksRecursive(
+				at: entry,
+				into: outputDirectory,
+				blocks: &blocks
+			)
 		}
 	}
-
-	return blocks
 }
 
 /// Gets block information from a specific path
 /// - Parameter path: Path to check for a block (can be file or directory)
 /// - Returns: BlockInfo if a valid block is found, nil otherwise
-private func getBlockInfo(at path: URL) throws -> BlockInfo? {
+private func getBlockInfo(at path: URL, into outputDirectory: URL) throws
+	-> BlockInfo?
+{
 	let fileManager = FileManager.default
 	var isDirectory: ObjCBool = false
 
@@ -74,14 +110,15 @@ private func getBlockInfo(at path: URL) throws -> BlockInfo? {
 
 	let blockDir: URL
 	let indexPath: URL
-	var dependencies: [URL] = []
+	var inputFiles: [URL] = []
+	var outputFiles: [URL] = []
 
 	if isDirectory.boolValue {
 		// It's a directory - look for index.ts or index.tsx
 		blockDir = path
 
-		let indexTsxPath = path.appendingPathComponent("index.tsx")
-		let indexTsPath = path.appendingPathComponent("index.ts")
+		let indexTsxPath = path.appending(path: "index.tsx")
+		let indexTsPath = path.appending(path: "index.ts")
 
 		if fileManager.fileExists(atPath: indexTsxPath.path) {
 			indexPath = indexTsxPath
@@ -97,13 +134,16 @@ private func getBlockInfo(at path: URL) throws -> BlockInfo? {
 		indexPath = path
 	}
 
-	// Add the index file as a dependency
-	dependencies.append(indexPath)
+	inputFiles.append(indexPath)
+	outputFiles.append(outputDirectory)
 
-	// Check for README.md in the block directory
-	let readmePath = blockDir.appendingPathComponent("README.md")
-	if fileManager.fileExists(atPath: readmePath.path) {
-		dependencies.append(readmePath)
+	// Parse imports from the index file to determine dependencies
+	if let content = try? String(contentsOf: indexPath, encoding: .utf8) {
+		let importedFiles = extractImports(
+			from: content,
+			baseDirectory: blockDir
+		)
+		inputFiles.append(contentsOf: importedFiles)
 	}
 
 	// Get the block name from the directory
@@ -112,14 +152,29 @@ private func getBlockInfo(at path: URL) throws -> BlockInfo? {
 	return BlockInfo(
 		name: blockName,
 		path: indexPath,
-		dependencies: dependencies
+		inputFiles: inputFiles,
+		outputFiles: outputFiles
 	)
 }
 
-/// Collects all input files for building blocks in a target path
-/// - Parameter targetPath: The directory to search for blocks
-/// - Returns: Array of URLs representing all input files (index.ts/tsx, README.md, etc.)
-func collectInputFiles(at targetPath: URL) throws -> [URL] {
-	let blocks = try discoverBlocks(at: targetPath)
-	return blocks.flatMap { $0.dependencies }
+/// Extract import statements from TypeScript/TSX content
+/// - Parameters:
+///   - content: The file content to parse
+///   - baseDirectory: The directory to resolve relative imports from
+/// - Returns: Array of URLs to imported files
+private func extractImports(from content: String, baseDirectory: URL) -> [URL] {
+	var imports: [URL] = []
+
+	// Regex patterns for different import styles
+	// Match: import ... from "./file" or import ... from './file'
+	let regex = #/import\s+[^\s]+\s+from\s+['\"](\.[^'\"]+)['\"]/#
+	let matches = content.matches(of: regex)
+
+	for match in matches {
+		let importPath = match.output.1
+		let resolvedURL = baseDirectory.appending(path: importPath)
+		imports.append(resolvedURL)
+	}
+
+	return imports
 }

@@ -43,15 +43,24 @@ extension BlockParty_Swift {
 		in pluginWorkDirectory: URL,
 		with toolPath: URL
 	) throws -> [Command] {
-		let inputFiles = try collectInputFiles(at: targetDirectory)
+		// Create output directory in plugin work directory
+		let outputDirectory = pluginWorkDirectory.appending(
+			path: "build",
+			directoryHint: .isDirectory
+		)
+		let blocks = try discoverBlocks(
+			at: targetDirectory,
+			into: outputDirectory
+		)
+		let inputFiles = blocks.flatMap { $0.inputFiles }
+		var outputFiles = blocks.flatMap { $0.outputFiles }
 		guard !inputFiles.isEmpty else {
 			print("No blocks found under \(targetDirectory.path)")
 			return []
 		}
 
-		// Create output directory in plugin work directory
-		let outputDirectory = pluginWorkDirectory.appendingPathComponent(
-			"build"
+		outputFiles.append(
+			outputDirectory.appending(path: "BlockParty-Generated.swift")
 		)
 
 		// Return a command that will run during the build to process all blocks
@@ -64,11 +73,7 @@ extension BlockParty_Swift {
 					outputDirectory.path,
 				],
 				inputFiles: inputFiles,
-				outputFiles: [
-					outputDirectory.appendingPathComponent(
-						"BlockParty-Generated.swift"
-					)
-				]
+				outputFiles: outputFiles
 			)
 		]
 	}

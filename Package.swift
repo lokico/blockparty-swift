@@ -24,13 +24,25 @@ let package = Package(
 		// Targets can depend on other targets in this package and products from dependencies.
 		.plugin(
 			name: "BlockParty-Swift",
-			capability: .buildTool()
+			capability: .buildTool(),
+			dependencies: [
+				.target(name: "BlockPartyTool")
+			]
 		),
 		.executableTarget(
 			name: "BlockPartyTool"
 		),
 		.target(
 			name: "BlockParty"
+		),
+		.testTarget(
+			name: "BlockPartyTests",
+			dependencies: [
+				.target(name: "BlockParty")
+			],
+			plugins: [
+				.plugin(name: "BlockParty-Swift")
+			]
 		),
 	]
 )
