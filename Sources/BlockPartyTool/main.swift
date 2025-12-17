@@ -23,6 +23,7 @@ struct PropDefinition: Decodable {
 	let type: String
 	let optional: Bool
 	let properties: [PropDefinition]?
+	let parameters: [PropDefinition]?
 	let description: String?
 }
 
@@ -306,7 +307,8 @@ struct BlockPartyTool {
 			} else {
 				mapped = mapTypeScriptTypeToSwift(
 					prop.type,
-					isOptional: prop.optional
+					isOptional: prop.optional,
+					parameters: prop.parameters
 				)
 			}
 			isEncodable = isEncodable && mapped.isEncodable
@@ -356,6 +358,67 @@ struct BlockPartyTool {
 		return code
 	}
 
+	// Helper function to generate function callback registration code
+	static func generateFunctionCallback(
+		propName: String,
+		mapped: MappedType,
+		parameters: [PropDefinition]?,
+		indent: String
+	) -> String {
+		var code = ""
+
+		// Strip optional ? and parentheses when checking return type
+		var baseType = mapped.swiftType
+		if baseType.hasSuffix("?") {
+			baseType = String(baseType.dropLast())
+		}
+		if baseType.hasPrefix("(") && baseType.hasSuffix(")") {
+			baseType = String(baseType.dropFirst().dropLast())
+		}
+
+		// Extract return type from function signature
+		let returnType: String
+		if let arrowIndex = baseType.range(of: "->", options: .backwards) {
+			returnType = baseType[arrowIndex.upperBound...].trimmingCharacters(
+				in: .whitespaces
+			)
+		} else {
+			returnType = "Void"
+		}
+
+		code += "context.registerSyncCallback { args in\n"
+
+		// Parse parameters and call function using JSCall
+		if let params = parameters, !params.isEmpty {
+			// Build JSCall generic type with return type and parameter types
+			let paramTypes = params.map { param in
+				mapTypeScriptTypeToSwift(
+					param.type,
+					isOptional: param.optional,
+					parameters: param.parameters
+				).swiftType
+			}.joined(separator: ", ")
+
+			code += "\(indent)\tlet argsData = Data(args.utf8)\n"
+			code +=
+				"\(indent)\tlet jsCall = try JSONDecoder().decode(JSCall<\(returnType), \(paramTypes)>.self, from: argsData)\n"
+			code += "\(indent)\treturn try jsCall.call(\(propName))\n"
+		} else {
+			// No parameters
+			if returnType != "Void" && returnType != "()" {
+				code += "\(indent)\tlet result = \(propName)()\n"
+				code +=
+					"\(indent)\treturn try BlockParty.dataToUTF8String(JSONEncoder().encode(result))\n"
+			} else {
+				code += "\(indent)\t\(propName)()\n"
+				code += "\(indent)\treturn nil\n"
+			}
+		}
+
+		code += "\(indent)}\n"
+		return code
+	}
+
 	// Helper function to generate jsValue implementation
 	static func generateJSValue(
 		mappedProps: [(prop: PropDefinition, mapped: MappedType)],
@@ -364,7 +427,7 @@ struct BlockPartyTool {
 		var code = ""
 		code += "\n"
 		code +=
-			"\(indent)public func jsValue(context: JSEncodingContext) throws -> String {\n"
+			"\(indent)public func jsValue(context: any JSEncodingContext) throws -> String {\n"
 
 		// Check if any property is encodable
 		let hasEncodableMembers = mappedProps.contains { $0.mapped.isEncodable }
@@ -386,22 +449,24 @@ struct BlockPartyTool {
 			if isFunction {
 				if mapped.isOptional {
 					code += "\(indent)\tif let \(propName)Fn = \(propName) {\n"
-					code +=
-						"\(indent)\t\tjsExpr += context.registerSyncCallback { args in\n"
-					code += "\(indent)\t\t\t\(propName)Fn()\n"
-					code += "\(indent)\t\t\treturn nil\n"
-					code += "\(indent)\t\t}\n"
+					code += "\(indent)\t\tjsExpr += "
+					code += generateFunctionCallback(
+						propName: "\(propName)Fn",
+						mapped: mapped,
+						parameters: prop.parameters,
+						indent: "\(indent)\t\t"
+					)
 					code += "\(indent)\t} else {\n"
-					code +=
-						"\(indent)\t\t// Use undefined for optional function types (Foo | undefined)\n"
 					code += "\(indent)\t\tjsExpr += \"undefined\"\n"
 					code += "\(indent)\t}\n"
 				} else {
-					code +=
-						"\(indent)\tjsExpr += context.registerSyncCallback { args in\n"
-					code += "\(indent)\t\t\(propName)()\n"
-					code += "\(indent)\t\treturn nil\n"
-					code += "\(indent)\t}\n"
+					code += "\(indent)\tjsExpr += "
+					code += generateFunctionCallback(
+						propName: propName,
+						mapped: mapped,
+						parameters: prop.parameters,
+						indent: "\(indent)\t"
+					)
 				}
 			} else if isNestedObject {
 				// Nested object - call its jsValue method
@@ -480,7 +545,8 @@ struct BlockPartyTool {
 
 	static func mapTypeScriptTypeToSwift<S: StringProtocol>(
 		_ tsType: S,
-		isOptional: Bool
+		isOptional: Bool,
+		parameters: [PropDefinition]?
 	)
 		-> MappedType
 	{
@@ -493,7 +559,8 @@ struct BlockPartyTool {
 		if cleanType.hasPrefix("(") && cleanType.hasSuffix(")") {
 			let mapped = mapTypeScriptTypeToSwift(
 				cleanType.dropFirst().dropLast(),
-				isOptional: false
+				isOptional: false,
+				parameters: parameters
 			)
 			isEncodable = isEncodable && mapped.isEncodable
 			isFunction = mapped.isFunction
@@ -521,18 +588,45 @@ struct BlockPartyTool {
 					}) {
 						return mapTypeScriptTypeToSwift(
 							nonUndefinedType,
-							isOptional: true
+							isOptional: true,
+							parameters: parameters
 						)
 					}
 				}
-				if cleanType.contains("=>") {
-					// Handle function types (e.g., "() => void")
+				if let params = parameters {
+					// Handle function types (e.g., "(x: number, y: number) => number")
 					isEncodable = false
 					isFunction = true
-					mappedType = cleanType.split(separator: "=>").map({
-						mapTypeScriptTypeToSwift($0, isOptional: false)
-							.swiftType
-					}).joined(separator: " -> ")
+
+					let paramTypes = params.map { param in
+						mapTypeScriptTypeToSwift(
+							param.type,
+							isOptional: param.optional,
+							parameters: param.parameters
+						).swiftType
+					}
+
+					// Get return type by parsing after =>
+					let parts = cleanType.split(separator: "=>", maxSplits: 1)
+					let returnType: String
+					if parts.count == 2 {
+						let returnTypeMapped = mapTypeScriptTypeToSwift(
+							parts[1],
+							isOptional: false,
+							parameters: nil
+						)
+						returnType = returnTypeMapped.swiftType
+					} else {
+						returnType = "Void"
+					}
+
+					// Build Swift function type without parameter labels
+					if paramTypes.isEmpty {
+						mappedType = "() -> \(returnType)"
+					} else {
+						mappedType =
+							"(\(paramTypes.joined(separator: ", "))) -> \(returnType)"
+					}
 				} else {
 					mappedType = String(cleanType)
 				}

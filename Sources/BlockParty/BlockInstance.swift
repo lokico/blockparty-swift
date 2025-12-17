@@ -5,11 +5,11 @@ public struct BlockInstance {
 	let blockType: BlockType
 
 	/// A closure that generates the JS expression containing props, given an encoding context
-	let makeProps: (JSEncodingContext) throws -> String
+	let makeProps: (any JSEncodingContext) throws -> String
 
 	public init(
 		type: BlockType,
-		makeProps: @escaping (JSEncodingContext) throws -> String
+		makeProps: @escaping (any JSEncodingContext) throws -> String
 	) {
 		self.blockType = type
 		self.makeProps = makeProps

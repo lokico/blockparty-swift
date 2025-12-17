@@ -6,13 +6,15 @@ import Testing
 
 // Simple test implementation of JSEncodingContext
 class TestJSEncodingContext: JSEncodingContext {
-	func registerSyncCallback(_ callback: @escaping (String?) -> String?)
+	func registerSyncCallback(_ callback: @escaping (String) throws -> String?)
 		-> String
 	{
 		return "(function() {})"
 	}
 
-	func registerAsyncCallback(_ callback: @escaping (String?) async -> String?)
+	func registerAsyncCallback(
+		_ callback: @escaping (String) async throws -> String?
+	)
 		-> String
 	{
 		return "(async function() {})"
@@ -222,6 +224,36 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
+	@Test(
+		"Calculator block with function that takes parameters and returns value"
+	)
+	func calculatorBlockWithFunctionParameters() async throws {
+		var receivedX: Double?
+		var receivedY: Double?
+		let block = Calculator(onCalculate: { x, y in
+			receivedX = x
+			receivedY = y
+			return x + y
+		})
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+
+		// Verify the result is displayed (10 + 5 = 15)
+		let resultText = try await controller.page!.callJavaScript(
+			"""
+			const div = document.querySelector('div');
+			return div ? div.textContent : null;
+			"""
+		)
+		#expect(resultText is String)
+		#expect((resultText as! String) == "Result: 15")
+
+		// Verify the Swift callback received the correct arguments
+		#expect(receivedX == 10)
+		#expect(receivedY == 5)
+	}
+
+	@MainActor
 	@Test("User block with nested Encodable type")
 	func userBlockWithNestedEncodableType() async throws {
 		// Verify at compile time that both User and User.Address are Encodable
@@ -229,12 +261,13 @@ struct BlockPartyTests {
 		assertEncodable(User.self)
 		assertEncodable(User.Address.self)
 
-		// Verify at runtime that User.Address conforms to Encodable
-		#expect(User.Address.self is Encodable.Type)
-
 		// Verify that User.Address has no custom jsValue by checking it uses the default implementation
 		// If it has Encodable conformance, the JSEncodable protocol extension provides jsValue
-		let testAddress = User.Address(street: "Test St", city: "Test City", zipCode: "00000")
+		let testAddress = User.Address(
+			street: "Test St",
+			city: "Test City",
+			zipCode: "00000"
+		)
 		let testContext = TestJSEncodingContext()
 		let addressJSON = try testAddress.jsValue(context: testContext)
 

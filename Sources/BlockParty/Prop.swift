@@ -12,7 +12,7 @@ public enum Prop {
 }
 
 extension Prop: JSEncodable {
-	public func jsValue(context: JSEncodingContext) throws -> String {
+	public func jsValue(context: any JSEncodingContext) throws -> String {
 		switch self {
 		case .array(let array):
 			var parts: [String] = []

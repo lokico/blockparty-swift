@@ -9,15 +9,16 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 	nonisolated(unsafe) var loadedContinuation:
 		CheckedContinuation<Void, Never>?
 
-	private var syncCallbacks: [String: (String?) -> String?] = [:]
-	private var asyncCallbacks: [String: (String?) async -> String?] =
+	// CallbackID: Args Array JSON -> JSON result (nil if function is void)
+	private var syncCallbacks: [String: (String) throws -> String?] = [:]
+	private var asyncCallbacks: [String: (String) async throws -> String?] =
 		[:]
 	private var nextCallbackId = 0
 
 	// MARK: - JSEncodingContext
 
 	func registerSyncCallback(
-		_ callback: @escaping (String?) -> String?
+		_ callback: @escaping (String) throws -> String?
 	) -> String {
 		let callbackId = "sync_\(nextCallbackId)"
 		nextCallbackId += 1
@@ -33,7 +34,7 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 	}
 
 	func registerAsyncCallback(
-		_ callback: @escaping (String?) async -> String?
+		_ callback: @escaping (String) async throws -> String?
 	) -> String {
 		let callbackId = "async_\(nextCallbackId)"
 		nextCallbackId += 1
@@ -88,8 +89,15 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 			}
 
 			Task {
-				let result = await callback(argsJSON)
-				// TODO: Return result to JavaScript
+				do {
+					let result = try await callback(argsJSON)
+					// FIXME: Return result to JavaScript
+				} catch {
+					// FIXME: Better logging
+					print(
+						"Async JS callback '\(callbackId)' threw an error: \(error)"
+					)
+				}
 			}
 		}
 	}
@@ -101,13 +109,19 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 		defaultText: String?,
 		initiatedBy frame: WebPage.FrameInfo
 	) async -> WebPage.JavaScriptPromptResult {
-		guard let callback = syncCallbacks[message],
-			let argsJSON = defaultText
-		else {
-			return .ok("")
+		do {
+			if let callback = syncCallbacks[message],
+				let argsJSON = defaultText,
+				let result = try callback(argsJSON)
+			{
+				return .ok(result)
+			}
+		} catch {
+			// FIXME: Better logging
+			print(
+				"Sync JS callback '\(message)' threw an error: \(error)"
+			)
 		}
-
-		let result = callback(argsJSON)
-		return .ok(result ?? "")
+		return .cancel
 	}
 }
