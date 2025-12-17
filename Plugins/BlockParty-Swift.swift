@@ -52,11 +52,23 @@ extension BlockParty_Swift {
 			at: targetDirectory,
 			into: outputDirectory
 		)
-		let inputFiles = blocks.flatMap { $0.inputFiles }
+		var inputFiles = blocks.flatMap { $0.inputFiles }
 		var outputFiles = blocks.flatMap { $0.outputFiles }
 		guard !inputFiles.isEmpty else {
 			print("No blocks found under \(targetDirectory.path)")
 			return []
+		}
+
+		let packageJson = targetDirectory.appending(path: "package.json")
+		if FileManager.default.fileExists(atPath: packageJson.path) {
+			inputFiles.append(packageJson)
+		}
+
+		let packageLockJson = targetDirectory.appending(
+			path: "package-lock.json"
+		)
+		if FileManager.default.fileExists(atPath: packageLockJson.path) {
+			inputFiles.append(packageLockJson)
 		}
 
 		outputFiles.append(

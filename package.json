@@ -4,6 +4,6 @@
 	    "This package just supports building the Blocks dir for the tests",
 	"version": "0.0.1",
 	"devDependencies": {
-		"blockparty": "0.1.4"
+		"blockparty": "0.2.0"
 	}
 }

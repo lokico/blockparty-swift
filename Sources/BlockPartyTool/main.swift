@@ -168,37 +168,15 @@ struct BlockPartyTool {
 	) -> String {
 		let structName = swiftIdentifier(for: block.name)
 
-		var code = ""
+		let structInfo = generateStruct(
+			name: structName,
+			description: block.description,
+			baseConformance: "Block",
+			properties: block.propDefinitions,
+			indent: ""
+		)
 
-		// Add documentation if available
-		if let description = block.description {
-			code += "/// \(description)\n"
-		}
-
-		var isEncodable = true
-		var hasEncodableMembers = false
-		var mappedProps: [(prop: PropDefinition, mapped: MappedType)] = []
-		for prop in block.propDefinitions {
-			let mapped = mapTypeScriptTypeToSwift(
-				prop.type,
-				isOptional: prop.optional
-			)
-			isEncodable = isEncodable && mapped.isEncodable
-			hasEncodableMembers = hasEncodableMembers || mapped.isEncodable
-			mappedProps.append((prop: prop, mapped: mapped))
-		}
-
-		code +=
-			"public struct \(structName): Block\(isEncodable ? ", Encodable" : "") {\n"
-
-		// Generate properties from propDefinitions
-		for (prop, mapped) in mappedProps {
-			if let description = prop.description {
-				code += "\t/// \(description)\n"
-			}
-			code +=
-				"\tpublic let \(swiftIdentifier(for: prop.name)): \(mapped.swiftType)\n"
-		}
+		var code = structInfo.openingCode
 
 		// Add static blockType property
 		code += "\n"
@@ -258,73 +236,6 @@ struct BlockPartyTool {
 		code += "\t\t\t}\n"
 		code += "\t}\n"
 
-		// Add initializer
-		code += "\n"
-		code += "\tpublic init(\n"
-		for (index, prop) in block.propDefinitions.enumerated() {
-			let mapped = mapTypeScriptTypeToSwift(
-				prop.type,
-				isOptional: prop.optional
-			)
-			let comma = index < block.propDefinitions.count - 1 ? "," : ""
-			code +=
-				"\t\t\(swiftIdentifier(for: prop.name)): \(mapped.swiftType)\(comma)\n"
-		}
-		code += "\t) {\n"
-		for prop in block.propDefinitions {
-			let propName = swiftIdentifier(for: prop.name)
-			code += "\t\tself.\(propName) = \(propName)\n"
-		}
-		code += "\t}\n"
-
-		// Add custom jsValue implementation for non-Encodable blocks
-		if !isEncodable {
-			code += "\n"
-			code +=
-				"\tpublic func jsValue(context: JSEncodingContext) throws -> String {\n"
-			if hasEncodableMembers {
-				code += "\t\tlet encoder = JSONEncoder()\n"
-			}
-			code += "\t\tvar jsExpr = \"{\"\n"
-			for (index, (prop, mapped)) in mappedProps.enumerated() {
-				let propName = swiftIdentifier(for: prop.name)
-				let isFunction = mapped.swiftType.contains("->")
-
-				if index > 0 {
-					code += "\t\tjsExpr += \",\"\n"
-				}
-				code += "\t\tjsExpr += \"\\\"\(prop.name)\\\":\"\n"
-
-				if isFunction {
-					// Register function callback and get JS function expression
-					if mapped.isOptional {
-						code += "\t\tif let \(propName)Fn = \(propName) {\n"
-						code +=
-							"\t\t\tjsExpr += context.registerSyncCallback { args in\n"
-						code += "\t\t\t\t\(propName)Fn()\n"
-						code += "\t\t\t\treturn nil\n"
-						code += "\t\t\t}\n"
-						code += "\t\t} else {\n"
-						code += "\t\t\tjsExpr += \"undefined\"\n"
-						code += "\t\t}\n"
-					} else {
-						code +=
-							"\t\tjsExpr += context.registerSyncCallback { args in\n"
-						code += "\t\t\t\(propName)()\n"
-						code += "\t\t\treturn nil\n"
-						code += "\t\t}\n"
-					}
-				} else {
-					// Regular Encodable property
-					code +=
-						"\t\tjsExpr += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
-				}
-			}
-			code += "\t\tjsExpr += \"}\"\n"
-			code += "\t\treturn jsExpr\n"
-			code += "\t}\n"
-		}
-
 		code += "}"
 
 		return code
@@ -335,6 +246,236 @@ struct BlockPartyTool {
 		let isEncodable: Bool
 		let isOptional: Bool
 		let isFunction: Bool
+		let isNestedObject: Bool
+	}
+
+	struct StructInfo {
+		let name: String
+		let openingCode: String
+		let isEncodable: Bool
+	}
+
+	// Helper function to process properties with nested struct generation
+	static func processProperties(
+		properties: [PropDefinition],
+		indent: String
+	) -> (
+		mappedProps: [(prop: PropDefinition, mapped: MappedType)],
+		nestedStructInfos: [StructInfo],
+		isEncodable: Bool
+	) {
+		var mappedProps: [(prop: PropDefinition, mapped: MappedType)] = []
+		var nestedStructInfos: [StructInfo] = []
+		var isEncodable = true
+
+		// First pass: recursively generate nested structs for properties with nested properties
+		for prop in properties {
+			if let nestedProps = prop.properties {
+				let nestedStructName =
+					swiftIdentifier(for: prop.name).prefix(1).uppercased()
+					+ swiftIdentifier(for: prop.name).dropFirst()
+				let nestedStructInfo = generateStruct(
+					name: String(nestedStructName),
+					baseConformance: "JSEncodable",
+					properties: nestedProps,
+					indent: indent + "\t"
+				)
+				nestedStructInfos.append(nestedStructInfo)
+			}
+		}
+
+		// Second pass: map all properties
+		for prop in properties {
+			let mapped: MappedType
+			if prop.properties != nil {
+				// This is a nested object type - use the generated struct name
+				let nestedStructName =
+					swiftIdentifier(for: prop.name).prefix(1).uppercased()
+					+ swiftIdentifier(for: prop.name).dropFirst()
+				let nestedInfo = nestedStructInfos.first {
+					$0.name == nestedStructName
+				}!
+				mapped = MappedType(
+					swiftType: String(nestedStructName)
+						+ (prop.optional ? "?" : ""),
+					isEncodable: nestedInfo.isEncodable,
+					isOptional: prop.optional,
+					isFunction: false,
+					isNestedObject: true
+				)
+			} else {
+				mapped = mapTypeScriptTypeToSwift(
+					prop.type,
+					isOptional: prop.optional
+				)
+			}
+			isEncodable = isEncodable && mapped.isEncodable
+			mappedProps.append((prop: prop, mapped: mapped))
+		}
+
+		return (mappedProps, nestedStructInfos, isEncodable)
+	}
+
+	// Helper function to generate property declarations
+	static func generateProperties(
+		mappedProps: [(prop: PropDefinition, mapped: MappedType)],
+		indent: String
+	) -> String {
+		var code = ""
+		for (prop, mapped) in mappedProps {
+			if let description = prop.description {
+				code += "\(indent)/// \(description)\n"
+			}
+			code +=
+				"\(indent)public let \(swiftIdentifier(for: prop.name)): \(mapped.swiftType)\n"
+		}
+		return code
+	}
+
+	// Helper function to generate initializer
+	static func generateInitializer(
+		mappedProps: [(prop: PropDefinition, mapped: MappedType)],
+		indent: String
+	) -> String {
+		var code = ""
+		code += "\n"
+		code += "\(indent)public init(\n"
+		for (index, (prop, mapped)) in mappedProps.enumerated() {
+			let comma = index < mappedProps.count - 1 ? "," : ""
+			let escaping =
+				mapped.isFunction && !mapped.isOptional ? "@escaping " : ""
+			code +=
+				"\(indent)\t\(swiftIdentifier(for: prop.name)): \(escaping)\(mapped.swiftType)\(comma)\n"
+		}
+		code += "\(indent)) {\n"
+		for (prop, _) in mappedProps {
+			let propName = swiftIdentifier(for: prop.name)
+			code += "\(indent)\tself.\(propName) = \(propName)\n"
+		}
+		code += "\(indent)}\n"
+		return code
+	}
+
+	// Helper function to generate jsValue implementation
+	static func generateJSValue(
+		mappedProps: [(prop: PropDefinition, mapped: MappedType)],
+		indent: String
+	) -> String {
+		var code = ""
+		code += "\n"
+		code +=
+			"\(indent)public func jsValue(context: JSEncodingContext) throws -> String {\n"
+
+		// Check if any property is encodable
+		let hasEncodableMembers = mappedProps.contains { $0.mapped.isEncodable }
+		if hasEncodableMembers {
+			code += "\(indent)\tlet encoder = JSONEncoder()\n"
+		}
+
+		code += "\(indent)\tvar jsExpr = \"{\"\n"
+		for (index, (prop, mapped)) in mappedProps.enumerated() {
+			let propName = swiftIdentifier(for: prop.name)
+			let isFunction = mapped.isFunction
+			let isNestedObject = mapped.isNestedObject
+
+			if index > 0 {
+				code += "\(indent)\tjsExpr += \",\"\n"
+			}
+			code += "\(indent)\tjsExpr += \"\\\"\(prop.name)\\\":\"\n"
+
+			if isFunction {
+				if mapped.isOptional {
+					code += "\(indent)\tif let \(propName)Fn = \(propName) {\n"
+					code +=
+						"\(indent)\t\tjsExpr += context.registerSyncCallback { args in\n"
+					code += "\(indent)\t\t\t\(propName)Fn()\n"
+					code += "\(indent)\t\t\treturn nil\n"
+					code += "\(indent)\t\t}\n"
+					code += "\(indent)\t} else {\n"
+					code +=
+						"\(indent)\t\t// Use undefined for optional function types (Foo | undefined)\n"
+					code += "\(indent)\t\tjsExpr += \"undefined\"\n"
+					code += "\(indent)\t}\n"
+				} else {
+					code +=
+						"\(indent)\tjsExpr += context.registerSyncCallback { args in\n"
+					code += "\(indent)\t\t\(propName)()\n"
+					code += "\(indent)\t\treturn nil\n"
+					code += "\(indent)\t}\n"
+				}
+			} else if isNestedObject {
+				// Nested object - call its jsValue method
+				if mapped.isOptional {
+					code += "\(indent)\tif let \(propName)Val = \(propName) {\n"
+					code +=
+						"\(indent)\t\tjsExpr += try \(propName)Val.jsValue(context: context)\n"
+					code += "\(indent)\t} else {\n"
+					code += "\(indent)\t\tjsExpr += \"null\"\n"
+					code += "\(indent)\t}\n"
+				} else {
+					code +=
+						"\(indent)\tjsExpr += try \(propName).jsValue(context: context)\n"
+				}
+			} else {
+				// Regular Encodable property
+				code +=
+					"\(indent)\tjsExpr += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
+			}
+		}
+		code += "\(indent)\tjsExpr += \"}\"\n"
+		code += "\(indent)\treturn jsExpr\n"
+		code += "\(indent)}\n"
+		return code
+	}
+
+	static func generateStruct(
+		name: String,
+		description: String? = nil,
+		baseConformance: String,
+		properties: [PropDefinition],
+		indent: String
+	) -> StructInfo {
+		var code = ""
+		var indent = indent
+
+		// Add documentation if available
+		if let description = description {
+			code += "\(indent)/// \(description)\n"
+		}
+
+		// Process properties using shared helper
+		let (mappedProps, nestedStructInfos, isEncodable) = processProperties(
+			properties: properties,
+			indent: indent
+		)
+
+		code +=
+			"\(indent)public struct \(name): \(baseConformance)\(isEncodable ? ", Encodable" : "") {\n"
+
+		indent += "\t"
+
+		// Generate nested struct definitions
+		for info in nestedStructInfos {
+			code += info.openingCode
+			code += "\(indent)}\n"
+		}
+
+		// Generate properties using helper
+		code += generateProperties(mappedProps: mappedProps, indent: indent)
+
+		// Generate initializer using helper
+		code += generateInitializer(mappedProps: mappedProps, indent: indent)
+
+		// If not encodable, generate custom jsValue implementation using helper
+		if !isEncodable {
+			code += generateJSValue(mappedProps: mappedProps, indent: indent)
+		}
+
+		return StructInfo(
+			name: name,
+			openingCode: code,
+			isEncodable: isEncodable
+		)
 	}
 
 	static func mapTypeScriptTypeToSwift<S: StringProtocol>(
@@ -355,6 +496,7 @@ struct BlockPartyTool {
 				isOptional: false
 			)
 			isEncodable = isEncodable && mapped.isEncodable
+			isFunction = mapped.isFunction
 			mappedType = "(\(mapped.swiftType))"
 		} else {
 			switch cleanType {
@@ -405,7 +547,8 @@ struct BlockPartyTool {
 			swiftType: mappedType,
 			isEncodable: isEncodable,
 			isOptional: isOptional,
-			isFunction: isFunction
+			isFunction: isFunction,
+			isNestedObject: false
 		)
 	}
 

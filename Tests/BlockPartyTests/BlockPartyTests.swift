@@ -182,4 +182,105 @@ struct BlockPartyTests {
 		// Verify the Swift callback was called
 		#expect(callCount == 1)
 	}
+
+	@MainActor
+	@Test("Counter-nested block with nested function callback")
+	func counterNestedBlockWithNestedCallback() async throws {
+		var callCount = 0
+		let block = Counter_nested(
+			count: 7,
+			callbacks: Counter_nested.Callbacks(increment: {
+				callCount += 1
+			})
+		)
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+
+		// Verify initial count is displayed
+		let initialText = try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			return button ? button.textContent : null;
+			"""
+		)
+		#expect(initialText is String)
+		#expect((initialText as! String).contains("7 times"))
+
+		// Click the button programmatically
+		try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			button.click();
+			"""
+		)
+
+		// Wait a bit for the callback to be processed
+		try await Task.sleep(for: .milliseconds(100))
+
+		// Verify the Swift callback was called
+		#expect(callCount == 1)
+	}
+
+	@MainActor
+	@Test("User block with nested Encodable type")
+	func userBlockWithNestedEncodableType() async throws {
+		// Verify at compile time that both User and User.Address are Encodable
+		func assertEncodable<T: Encodable>(_: T.Type) {}
+		assertEncodable(User.self)
+		assertEncodable(User.Address.self)
+
+		// Verify at runtime that User.Address conforms to Encodable
+		#expect(User.Address.self is Encodable.Type)
+
+		// Verify that User.Address has no custom jsValue by checking it uses the default implementation
+		// If it has Encodable conformance, the JSEncodable protocol extension provides jsValue
+		let testAddress = User.Address(street: "Test St", city: "Test City", zipCode: "00000")
+		let testContext = TestJSEncodingContext()
+		let addressJSON = try testAddress.jsValue(context: testContext)
+
+		// The default jsValue implementation for Encodable types should produce valid JSON
+		#expect(addressJSON.contains("\"street\""))
+		#expect(addressJSON.contains("\"Test St\""))
+		#expect(addressJSON.contains("\"city\""))
+		#expect(addressJSON.contains("\"Test City\""))
+		#expect(addressJSON.contains("\"zipCode\""))
+		#expect(addressJSON.contains("\"00000\""))
+
+		// Now test the actual rendering
+		let block = User(
+			name: "Alice",
+			age: 30,
+			address: User.Address(
+				street: "123 Main St",
+				city: "Springfield",
+				zipCode: "12345"
+			)
+		)
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+
+		// Verify the name and age are displayed
+		let nameText = try await controller.page!.callJavaScript(
+			"""
+			const h2 = document.querySelector('h2');
+			return h2 ? h2.textContent : null;
+			"""
+		)
+		#expect(nameText is String)
+		#expect((nameText as! String).contains("Alice"))
+		#expect((nameText as! String).contains("30"))
+
+		// Verify the address is displayed
+		let addressText = try await controller.page!.callJavaScript(
+			"""
+			const p = document.querySelector('p');
+			return p ? p.textContent : null;
+			"""
+		)
+		#expect(addressText is String)
+		let addressStr = addressText as! String
+		#expect(addressStr.contains("123 Main St"))
+		#expect(addressStr.contains("Springfield"))
+		#expect(addressStr.contains("12345"))
+	}
 }
