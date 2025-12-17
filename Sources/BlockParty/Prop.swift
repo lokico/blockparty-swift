@@ -12,45 +12,30 @@ public enum Prop {
 }
 
 extension Prop: JSEncodable {
-	public func jsValue(context: JSEncodingContext) throws -> Data {
+	public func jsValue(context: JSEncodingContext) throws -> String {
 		switch self {
 		case .array(let array):
-			var first = true
-			var data = Data()
-			data.append(0x5b)  // [
+			var parts: [String] = []
 			for element in array {
-				if !first { data.append(0x2c) }  // ,
-				data.append(try element.jsValue(context: context))
-				first = false
+				parts.append(try element.jsValue(context: context))
 			}
-			data.append(0x5d)  // ]
-			return data
+			return "[" + parts.joined(separator: ",") + "]"
 		case .object(let object):
-			var first = true
-			var data = Data()
-			let encoder = JSONEncoder()
-			data.append(0x7b)  // {
+			var parts: [String] = []
 			for (key, value) in object {
-				if !first { data.append(0x2c) }  // ,
-				data.append(try encoder.encode(key))
-				data.append(0x3a)  // :
-				data.append(try value.jsValue(context: context))
-				first = false
+				let encodedKey = try dataToUTF8String(JSONEncoder().encode(key))
+				let encodedValue = try value.jsValue(context: context)
+				parts.append("\(encodedKey):\(encodedValue)")
 			}
-			data.append(0x7d)  // }
-			return data
+			return "{" + parts.joined(separator: ",") + "}"
 		case .string(let string):
-			return try JSONEncoder().encode(string)
+			return try dataToUTF8String(JSONEncoder().encode(string))
 		case .number(let number):
-			return try JSONEncoder().encode(number)
+			return try dataToUTF8String(JSONEncoder().encode(number))
 		case .bool(let bool):
-			return Data(
-				bool
-					? [0x74, 0x72, 0x75, 0x65]  // "true" in utf8 bytes
-					: [0x66, 0x61, 0x6c, 0x73, 0x65]  // "false" in utf8 bytes
-			)
+			return bool ? "true" : "false"
 		case .null:
-			return Data([0x6e, 0x75, 0x6c, 0x6c])  // "null" in utf8 bytes
+			return "null"
 		}
 	}
 }

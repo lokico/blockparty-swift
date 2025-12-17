@@ -32,28 +32,10 @@ public struct BlockInstance {
 		type: BlockType,
 		props: Props
 	) throws {
-		self.init(
-			type: type,
-			makeProps: { context in
-				try dataToUTF8String(props.jsValue(context: context))
-			}
-		)
+		self.init(type: type, makeProps: props.jsValue)
 	}
 
 	public init<B: Block>(of block: B) throws {
 		try self.init(type: B.blockType, props: block)
 	}
-}
-
-public func dataToUTF8String(_ data: Data) throws -> String {
-	guard let str = String(data: data, encoding: .utf8) else {
-		throw EncodingError.invalidValue(
-			data,
-			.init(
-				codingPath: [],
-				debugDescription: "Not valid UTF-8."
-			)
-		)
-	}
-	return str
 }

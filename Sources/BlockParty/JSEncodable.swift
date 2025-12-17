@@ -17,11 +17,25 @@ public protocol JSEncodingContext {
 
 /// A superset of `Encodable` that also allows for arbitrary JavaScript expressions (e.g. lambda, Date, etc)
 public protocol JSEncodable {
-	func jsValue(context: JSEncodingContext) throws -> Data
+	func jsValue(context: JSEncodingContext) throws -> String
 }
 
 extension JSEncodable where Self: Encodable {
-	public func jsValue(context: JSEncodingContext) throws -> Data {
-		return try JSONEncoder().encode(self)
+	public func jsValue(context: JSEncodingContext) throws -> String {
+		return try dataToUTF8String(JSONEncoder().encode(self))
 	}
+}
+
+// Also called from BlockPartyTool generated jsValue implementations
+public func dataToUTF8String(_ data: Data) throws -> String {
+	guard let str = String(data: data, encoding: .utf8) else {
+		throw EncodingError.invalidValue(
+			data,
+			.init(
+				codingPath: [],
+				debugDescription: "Not valid UTF-8."
+			)
+		)
+	}
+	return str
 }

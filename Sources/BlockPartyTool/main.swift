@@ -281,47 +281,47 @@ struct BlockPartyTool {
 		if !isEncodable {
 			code += "\n"
 			code +=
-				"\tpublic func jsValue(context: JSEncodingContext) throws -> Data {\n"
+				"\tpublic func jsValue(context: JSEncodingContext) throws -> String {\n"
 			if hasEncodableMembers {
 				code += "\t\tlet encoder = JSONEncoder()\n"
 			}
-			code += "\t\tvar jsonString = \"{\"\n"
+			code += "\t\tvar jsExpr = \"{\"\n"
 			for (index, (prop, mapped)) in mappedProps.enumerated() {
 				let propName = swiftIdentifier(for: prop.name)
 				let isFunction = mapped.swiftType.contains("->")
 
 				if index > 0 {
-					code += "\t\tjsonString += \",\"\n"
+					code += "\t\tjsExpr += \",\"\n"
 				}
-				code += "\t\tjsonString += \"\\\"\(prop.name)\\\":\"\n"
+				code += "\t\tjsExpr += \"\\\"\(prop.name)\\\":\"\n"
 
 				if isFunction {
-					// Register function callback
+					// Register function callback and get JS function expression
 					if mapped.isOptional {
 						code += "\t\tif let \(propName)Fn = \(propName) {\n"
 						code +=
-							"\t\t\tjsonString += context.registerSyncCallback { args in\n"
+							"\t\t\tjsExpr += context.registerSyncCallback { args in\n"
 						code += "\t\t\t\t\(propName)Fn()\n"
 						code += "\t\t\t\treturn nil\n"
 						code += "\t\t\t}\n"
 						code += "\t\t} else {\n"
-						code += "\t\t\tjsonString += \"undefined\"\n"
+						code += "\t\t\tjsExpr += \"undefined\"\n"
 						code += "\t\t}\n"
 					} else {
 						code +=
-							"\t\tjsonString += context.registerSyncCallback { args in\n"
+							"\t\tjsExpr += context.registerSyncCallback { args in\n"
 						code += "\t\t\t\(propName)()\n"
 						code += "\t\t\treturn nil\n"
 						code += "\t\t}\n"
 					}
 				} else {
-					// Regular encodable property
+					// Regular Encodable property
 					code +=
-						"\t\tjsonString += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
+						"\t\tjsExpr += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
 				}
 			}
-			code += "\t\tjsonString += \"}\"\n"
-			code += "\t\treturn Data(jsonString.utf8)\n"
+			code += "\t\tjsExpr += \"}\"\n"
+			code += "\t\treturn jsExpr\n"
 			code += "\t}\n"
 		}
 
