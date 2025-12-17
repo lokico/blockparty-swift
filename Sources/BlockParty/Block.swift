@@ -1,9 +1,9 @@
-public protocol Block {
+public protocol Block: JSEncodable {
 	static var blockType: BlockType { get }
 	var blockInstance: BlockInstance { get throws }
 }
 
-extension Block where Self: Encodable {
+extension Block {
 	public var blockInstance: BlockInstance {
 		get throws {
 			try BlockInstance(of: self)

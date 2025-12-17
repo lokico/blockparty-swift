@@ -175,21 +175,29 @@ struct BlockPartyTool {
 			code += "/// \(description)\n"
 		}
 
-		code += "public struct \(structName): Block, Encodable {\n"
-
-		// Generate properties from propDefinitions
+		var isEncodable = true
+		var hasEncodableMembers = false
+		var mappedProps: [(prop: PropDefinition, mapped: MappedType)] = []
 		for prop in block.propDefinitions {
-			if let description = prop.description {
-				code += "\t/// \(description)\n"
-			}
-
-			let swiftType = mapTypeScriptTypeToSwift(
+			let mapped = mapTypeScriptTypeToSwift(
 				prop.type,
 				isOptional: prop.optional
 			)
-			let optionalMark = prop.optional ? "?" : ""
+			isEncodable = isEncodable && mapped.isEncodable
+			hasEncodableMembers = hasEncodableMembers || mapped.isEncodable
+			mappedProps.append((prop: prop, mapped: mapped))
+		}
+
+		code +=
+			"public struct \(structName): Block\(isEncodable ? ", Encodable" : "") {\n"
+
+		// Generate properties from propDefinitions
+		for (prop, mapped) in mappedProps {
+			if let description = prop.description {
+				code += "\t/// \(description)\n"
+			}
 			code +=
-				"\tpublic let \(swiftIdentifier(for: prop.name)): \(swiftType)\(optionalMark)\n"
+				"\tpublic let \(swiftIdentifier(for: prop.name)): \(mapped.swiftType)\n"
 		}
 
 		// Add static blockType property
@@ -254,14 +262,13 @@ struct BlockPartyTool {
 		code += "\n"
 		code += "\tpublic init(\n"
 		for (index, prop) in block.propDefinitions.enumerated() {
-			let swiftType = mapTypeScriptTypeToSwift(
+			let mapped = mapTypeScriptTypeToSwift(
 				prop.type,
 				isOptional: prop.optional
 			)
-			let optionalMark = prop.optional ? "?" : ""
 			let comma = index < block.propDefinitions.count - 1 ? "," : ""
 			code +=
-				"\t\t\(swiftIdentifier(for: prop.name)): \(swiftType)\(optionalMark)\(comma)\n"
+				"\t\t\(swiftIdentifier(for: prop.name)): \(mapped.swiftType)\(comma)\n"
 		}
 		code += "\t) {\n"
 		for prop in block.propDefinitions {
@@ -270,52 +277,136 @@ struct BlockPartyTool {
 		}
 		code += "\t}\n"
 
+		// Add custom jsValue implementation for non-Encodable blocks
+		if !isEncodable {
+			code += "\n"
+			code +=
+				"\tpublic func jsValue(context: JSEncodingContext) throws -> Data {\n"
+			if hasEncodableMembers {
+				code += "\t\tlet encoder = JSONEncoder()\n"
+			}
+			code += "\t\tvar jsonString = \"{\"\n"
+			for (index, (prop, mapped)) in mappedProps.enumerated() {
+				let propName = swiftIdentifier(for: prop.name)
+				let isFunction = mapped.swiftType.contains("->")
+
+				if index > 0 {
+					code += "\t\tjsonString += \",\"\n"
+				}
+				code += "\t\tjsonString += \"\\\"\(prop.name)\\\":\"\n"
+
+				if isFunction {
+					// Register function callback
+					if mapped.isOptional {
+						code += "\t\tif let \(propName)Fn = \(propName) {\n"
+						code +=
+							"\t\t\tjsonString += context.registerSyncCallback { args in\n"
+						code += "\t\t\t\t\(propName)Fn()\n"
+						code += "\t\t\t\treturn nil\n"
+						code += "\t\t\t}\n"
+						code += "\t\t} else {\n"
+						code += "\t\t\tjsonString += \"undefined\"\n"
+						code += "\t\t}\n"
+					} else {
+						code +=
+							"\t\tjsonString += context.registerSyncCallback { args in\n"
+						code += "\t\t\t\(propName)()\n"
+						code += "\t\t\treturn nil\n"
+						code += "\t\t}\n"
+					}
+				} else {
+					// Regular encodable property
+					code +=
+						"\t\tjsonString += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
+				}
+			}
+			code += "\t\tjsonString += \"}\"\n"
+			code += "\t\treturn Data(jsonString.utf8)\n"
+			code += "\t}\n"
+		}
+
 		code += "}"
 
 		return code
 	}
 
-	static func mapTypeScriptTypeToSwift(_ tsType: String, isOptional: Bool)
-		-> String
+	struct MappedType {
+		let swiftType: String
+		let isEncodable: Bool
+		let isOptional: Bool
+		let isFunction: Bool
+	}
+
+	static func mapTypeScriptTypeToSwift<S: StringProtocol>(
+		_ tsType: S,
+		isOptional: Bool
+	)
+		-> MappedType
 	{
-		// Handle common TypeScript types
+		var isEncodable = true
+		var isFunction = false
+		var mappedType: String
 		let cleanType = tsType.trimmingCharacters(in: .whitespaces)
 
-		// Handle union types with undefined (e.g., "string | undefined")
-		if cleanType.contains("|") && cleanType.contains("undefined") {
-			let parts = cleanType.split(separator: "|").map {
-				$0.trimmingCharacters(in: .whitespaces)
-			}
-			if let nonUndefinedType = parts.first(where: { $0 != "undefined" })
-			{
-				return mapTypeScriptTypeToSwift(
-					nonUndefinedType,
-					isOptional: true
-				)
+		// Handle parts wrapped in parentheses first
+		if cleanType.hasPrefix("(") && cleanType.hasSuffix(")") {
+			let mapped = mapTypeScriptTypeToSwift(
+				cleanType.dropFirst().dropLast(),
+				isOptional: false
+			)
+			isEncodable = isEncodable && mapped.isEncodable
+			mappedType = "(\(mapped.swiftType))"
+		} else {
+			switch cleanType {
+			case "string":
+				mappedType = "String"
+			case "number":
+				mappedType = "Double"
+			case "boolean":
+				mappedType = "Bool"
+			case "any":
+				mappedType = "Any"
+			case "void", "undefined", "null":
+				mappedType = "Void"
+			default:
+				if cleanType.contains("|") && cleanType.contains("undefined") {
+					// Handle union types with undefined (e.g., "string | undefined")
+					let parts = cleanType.split(separator: "|").map {
+						$0.trimmingCharacters(in: .whitespaces)
+					}
+					if let nonUndefinedType = parts.first(where: {
+						$0 != "undefined"
+					}) {
+						return mapTypeScriptTypeToSwift(
+							nonUndefinedType,
+							isOptional: true
+						)
+					}
+				}
+				if cleanType.contains("=>") {
+					// Handle function types (e.g., "() => void")
+					isEncodable = false
+					isFunction = true
+					mappedType = cleanType.split(separator: "=>").map({
+						mapTypeScriptTypeToSwift($0, isOptional: false)
+							.swiftType
+					}).joined(separator: " -> ")
+				} else {
+					mappedType = String(cleanType)
+				}
 			}
 		}
 
-		// Handle function types (e.g., "() => void")
-		if cleanType.contains("=>") {
-			return "String"  // Encode functions as strings (not callable from Swift)
+		if isOptional {
+			mappedType += "?"
 		}
 
-		// Map basic types
-		switch cleanType {
-		case "string":
-			return "String"
-		case "number":
-			return "Double"
-		case "boolean":
-			return "Bool"
-		case "any":
-			return "AnyCodable"
-		case "void", "undefined", "null":
-			return "String"
-		default:
-			// For complex types or unknown types, use String
-			return "String"
-		}
+		return MappedType(
+			swiftType: mappedType,
+			isEncodable: isEncodable,
+			isOptional: isOptional,
+			isFunction: isFunction
+		)
 	}
 
 	static func swiftIdentifier(for name: String) -> String {

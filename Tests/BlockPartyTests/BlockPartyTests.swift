@@ -4,6 +4,21 @@ import Testing
 
 @testable import BlockParty
 
+// Simple test implementation of JSEncodingContext
+class TestJSEncodingContext: JSEncodingContext {
+	func registerSyncCallback(_ callback: @escaping (String?) -> String?)
+		-> String
+	{
+		return "(function() {})"
+	}
+
+	func registerAsyncCallback(_ callback: @escaping (String?) async -> String?)
+		-> String
+	{
+		return "(async function() {})"
+	}
+}
+
 @Suite
 struct BlockPartyTests {
 	let baseURL = URL(string: "https://this.site.should.not.exist.abojdgwa/")!
@@ -21,10 +36,11 @@ struct BlockPartyTests {
 
 		let block = TestBlock(name: "Alice", count: 42)
 		let info = try block.blockInstance
+		let propsJS = try info.makeProps(TestJSEncodingContext())
 
 		#expect(info.blockType.jsPath == "./test.js")
-		#expect(info.propsJSON.contains("\"name\":\"Alice\""))
-		#expect(info.propsJSON.contains("\"count\":42"))
+		#expect(propsJS.contains("\"name\":\"Alice\""))
+		#expect(propsJS.contains("\"count\":42"))
 	}
 
 	@Test("BlockInstance handles optional props")
@@ -40,22 +56,13 @@ struct BlockPartyTests {
 
 		let blockWithOptional = TestBlock(required: "yes", optional: "maybe")
 		let info1 = try blockWithOptional.blockInstance
-		#expect(info1.propsJSON.contains("\"optional\":\"maybe\""))
+		let propsJS1 = try info1.makeProps(TestJSEncodingContext())
+		#expect(propsJS1.contains("\"optional\":\"maybe\""))
 
 		let blockWithoutOptional = TestBlock(required: "yes", optional: nil)
 		let info2 = try blockWithoutOptional.blockInstance
-		#expect(!info2.propsJSON.contains("\"optional\":"))
-	}
-
-	@Test("Generated blocks conform to Block protocol")
-	func generatedBlocksConformToProtocol() throws {
-		// This test verifies that the generated code compiles and works correctly
-		let counter = Counter(count: 5, increment: "increment callback")
-		let info = try counter.blockInstance
-
-		#expect(info.blockType.jsPath == "./Counter/index.js")
-		#expect(info.propsJSON.contains("\"count\":5"))
-		#expect(info.propsJSON.contains("\"increment\":"))
+		let propsJS2 = try info2.makeProps(TestJSEncodingContext())
+		#expect(!propsJS2.contains("\"optional\":"))
 	}
 
 	@Test("Generated Hello_css block with optional props")
@@ -63,29 +70,32 @@ struct BlockPartyTests {
 		// Test with optional greeting
 		let block1 = Hello_css(who: "World", greeting: "Hi")
 		let info1 = try block1.blockInstance
+		let propsJS1 = try info1.makeProps(TestJSEncodingContext())
 
 		#expect(info1.blockType.jsPath == "./Hello-css/index.js")
 		#expect(info1.blockType.cssPaths == ["./Hello-css/style.css"])
-		#expect(info1.propsJSON.contains("\"who\":\"World\""))
-		#expect(info1.propsJSON.contains("\"greeting\":\"Hi\""))
+		#expect(propsJS1.contains("\"who\":\"World\""))
+		#expect(propsJS1.contains("\"greeting\":\"Hi\""))
 
 		// Test without optional greeting
 		let block2 = Hello_css(who: "Alice", greeting: nil)
 		let info2 = try block2.blockInstance
+		let propsJS2 = try info2.makeProps(TestJSEncodingContext())
 
-		#expect(info2.propsJSON.contains("\"who\":\"Alice\""))
-		#expect(!info2.propsJSON.contains("\"greeting\":"))
+		#expect(propsJS2.contains("\"who\":\"Alice\""))
+		#expect(!propsJS2.contains("\"greeting\":"))
 	}
 
 	@Test("Generated Hello_inline block")
 	func helloInlineBlock() throws {
 		let block = Hello_inline(who: "Bob", greeting: nil)
 		let info = try block.blockInstance
+		let propsJS = try info.makeProps(TestJSEncodingContext())
 
 		#expect(info.blockType.jsPath == "./Hello-inline/index.js")
 		#expect(info.blockType.cssPaths.isEmpty)
-		#expect(info.propsJSON.contains("\"who\":\"Bob\""))
-		#expect(!info.propsJSON.contains("\"greeting\":"))
+		#expect(propsJS.contains("\"who\":\"Bob\""))
+		#expect(!propsJS.contains("\"greeting\":"))
 	}
 
 	@MainActor
@@ -109,30 +119,67 @@ struct BlockPartyTests {
 		async throws
 	{
 		let block = ctor("World", "Greetings")
-		let view = try BlockView(block.blockInstance, baseURL: baseURL)
-		await load(blockView: view)
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
 
 		// Execute JavaScript to check if styles are applied
-		let result = try await view.page.callJavaScript(
+		let result = try await controller.page!.callJavaScript(
 			"""
 			const elem = document.querySelector('h1');
 			return elem ? window.getComputedStyle(elem).color : null;
-			""",
-			arguments: [:],
-			in: nil,
-			contentWorld: .page
+			"""
 		)
 
 		// Verify the color is red (rgb(255, 0, 0))
 		#expect(result is String)
 		let colorValue = result as! String
 		#expect(colorValue == "rgb(17, 24, 39)")
+
+		// Verify the text content
+		let textResult = try await controller.page!.callJavaScript(
+			"""
+			const elem = document.querySelector('h1');
+			return elem ? elem.textContent : null;
+			"""
+		)
+
+		#expect(textResult is String)
+		let textValue = textResult as! String
+		#expect(textValue == "Greetings, World!")
 	}
 
 	@MainActor
-	private func load(blockView view: BlockView) async {
-		let controller = NSHostingController(rootView: view)
-		controller.loadViewIfNeeded()
-		await view.load()
+	@Test("Counter block with function callback")
+	func counterBlockWithFunctionCallback() async throws {
+		var callCount = 0
+		let block = Counter(count: 5) {
+			callCount += 1
+		}
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+
+		// Verify initial count is displayed
+		let initialText = try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			return button ? button.textContent : null;
+			"""
+		)
+		#expect(initialText is String)
+		#expect((initialText as! String).contains("5 times"))
+
+		// Click the button programmatically
+		try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			button.click();
+			"""
+		)
+
+		// Wait a bit for the callback to be processed
+		try await Task.sleep(for: .milliseconds(100))
+
+		// Verify the Swift callback was called
+		#expect(callCount == 1)
 	}
 }

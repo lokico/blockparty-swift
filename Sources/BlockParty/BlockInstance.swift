@@ -4,36 +4,56 @@ public struct BlockInstance {
 
 	let blockType: BlockType
 
-	/// A JSON string containing the props to use when instantiating the Block.
-	let propsJSON: String
+	/// A closure that generates the JS expression containing props, given an encoding context
+	let makeProps: (JSEncodingContext) throws -> String
 
 	public init(
 		type: BlockType,
-		propsJSON: String
+		makeProps: @escaping (JSEncodingContext) throws -> String
 	) {
 		self.blockType = type
-		self.propsJSON = propsJSON
+		self.makeProps = makeProps
 	}
 
+	@_disfavoredOverload
 	public init<Props: Encodable>(
 		type: BlockType,
 		props: Props
 	) throws {
-		let encoder = JSONEncoder()
-		let data = try encoder.encode(props)
-		guard let str = String(data: data, encoding: .utf8) else {
-			throw EncodingError.invalidValue(
-				data,
-				.init(
-					codingPath: [],
-					debugDescription: "Failed to encode props to UTF-8."
-				)
-			)
-		}
-		self.init(type: type, propsJSON: str)
+		self.init(
+			type: type,
+			makeProps: { _ in
+				try dataToUTF8String(JSONEncoder().encode(props))
+			}
+		)
 	}
 
-	public init<B: Block & Encodable>(of block: B) throws {
+	public init<Props: JSEncodable>(
+		type: BlockType,
+		props: Props
+	) throws {
+		self.init(
+			type: type,
+			makeProps: { context in
+				try dataToUTF8String(props.jsValue(context: context))
+			}
+		)
+	}
+
+	public init<B: Block>(of block: B) throws {
 		try self.init(type: B.blockType, props: block)
 	}
+}
+
+public func dataToUTF8String(_ data: Data) throws -> String {
+	guard let str = String(data: data, encoding: .utf8) else {
+		throw EncodingError.invalidValue(
+			data,
+			.init(
+				codingPath: [],
+				debugDescription: "Not valid UTF-8."
+			)
+		)
+	}
+	return str
 }
