@@ -376,6 +376,9 @@ struct BlockPartyTool {
 			baseType = String(baseType.dropFirst().dropLast())
 		}
 
+		// Check if function is async
+		let isAsync = baseType.contains(" async ")
+
 		// Extract return type from function signature
 		let returnType: String
 		if let arrowIndex = baseType.range(of: "->", options: .backwards) {
@@ -386,9 +389,15 @@ struct BlockPartyTool {
 			returnType = "Void"
 		}
 
-		code += "context.registerSyncCallback { args in\n"
+		// Use appropriate callback registration based on whether function is async
+		if isAsync {
+			code += "context.registerAsyncCallback { args in\n"
+		} else {
+			code += "context.registerSyncCallback { args in\n"
+		}
 
 		// Parse parameters and call function using JSCall
+		let awaitKeyword = isAsync ? "await " : ""
 		if let params = parameters, !params.isEmpty {
 			// Build JSCall generic type with return type and parameter types
 			let paramTypes = params.map { param in
@@ -402,15 +411,16 @@ struct BlockPartyTool {
 			code += "\(indent)\tlet argsData = Data(args.utf8)\n"
 			code +=
 				"\(indent)\tlet jsCall = try JSONDecoder().decode(JSCall<\(returnType), \(paramTypes)>.self, from: argsData)\n"
-			code += "\(indent)\treturn try jsCall.call(\(propName))\n"
+			code +=
+				"\(indent)\treturn try \(awaitKeyword)jsCall.invoke(\(propName))\n"
 		} else {
 			// No parameters
 			if returnType != "Void" && returnType != "()" {
-				code += "\(indent)\tlet result = \(propName)()\n"
+				code += "\(indent)\tlet result = \(awaitKeyword)\(propName)()\n"
 				code +=
 					"\(indent)\treturn try BlockParty.dataToUTF8String(JSONEncoder().encode(result))\n"
 			} else {
-				code += "\(indent)\t\(propName)()\n"
+				code += "\(indent)\t\(awaitKeyword)\(propName)()\n"
 				code += "\(indent)\treturn nil\n"
 			}
 		}
@@ -609,23 +619,47 @@ struct BlockPartyTool {
 					// Get return type by parsing after =>
 					let parts = cleanType.split(separator: "=>", maxSplits: 1)
 					let returnType: String
+					let isAsync: Bool
 					if parts.count == 2 {
-						let returnTypeMapped = mapTypeScriptTypeToSwift(
-							parts[1],
-							isOptional: false,
-							parameters: nil
+						let returnTypeStr = parts[1].trimmingCharacters(
+							in: .whitespaces
 						)
-						returnType = returnTypeMapped.swiftType
+						// Check if return type is Promise<T>
+						if returnTypeStr.hasPrefix("Promise<")
+							&& returnTypeStr.hasSuffix(">")
+						{
+							isAsync = true
+							// Extract T from Promise<T>
+							let innerType = returnTypeStr.dropFirst(
+								"Promise<".count
+							).dropLast()
+							let returnTypeMapped = mapTypeScriptTypeToSwift(
+								innerType,
+								isOptional: false,
+								parameters: nil
+							)
+							returnType = returnTypeMapped.swiftType
+						} else {
+							isAsync = false
+							let returnTypeMapped = mapTypeScriptTypeToSwift(
+								parts[1],
+								isOptional: false,
+								parameters: nil
+							)
+							returnType = returnTypeMapped.swiftType
+						}
 					} else {
+						isAsync = false
 						returnType = "Void"
 					}
 
 					// Build Swift function type without parameter labels
+					let asyncKeyword = isAsync ? " async" : ""
 					if paramTypes.isEmpty {
-						mappedType = "() -> \(returnType)"
+						mappedType = "()\(asyncKeyword) -> \(returnType)"
 					} else {
 						mappedType =
-							"(\(paramTypes.joined(separator: ", "))) -> \(returnType)"
+							"(\(paramTypes.joined(separator: ", ")))\(asyncKeyword) -> \(returnType)"
 					}
 				} else {
 					mappedType = String(cleanType)

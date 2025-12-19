@@ -12,8 +12,16 @@ extension JSCall: Decodable where repeat (each Arg): Decodable {
 }
 
 extension JSCall where R: Encodable {
-	public func call(_ fn: (repeat each Arg) -> R) throws -> String {
+	public func invoke(_ fn: (repeat each Arg) -> R) throws -> String {
 		let result = fn(repeat each args)
+		let data = try JSONEncoder().encode(result)
+		return try dataToUTF8String(data)
+	}
+
+	public func invoke(_ fn: (repeat each Arg) async -> R) async throws
+		-> String
+	{
+		let result = await fn(repeat each args)
 		let data = try JSONEncoder().encode(result)
 		return try dataToUTF8String(data)
 	}

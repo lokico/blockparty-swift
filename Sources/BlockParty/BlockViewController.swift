@@ -41,20 +41,25 @@ class BlockViewController {
 		}.joined(separator: "\n")
 
 		// Generate import map JSON
-		let importMapJSON = try! JSONSerialization.data(
-			withJSONObject: ["imports": ty.importMap],
-			options: [.withoutEscapingSlashes]
-		)
-		let importMapString = String(data: importMapJSON, encoding: .utf8)!
+		let importMapString: String
+		do {
+			let encoder = JSONEncoder()
+			encoder.outputFormatting = .withoutEscapingSlashes
+			let importMapJSON = try encoder.encode(["imports": ty.importMap])
+			importMapString =
+				"<script type=\"importmap\">\n"
+				+ (try dataToUTF8String(importMapJSON)) + "\n</script>"
+		} catch {
+			print("Failed to encode import map: \(error)")
+			importMapString = ""
+		}
 
 		let html = """
 			<!DOCTYPE html>
 			<html>
 			<head>
 				\(cssLinks)
-				<script type="importmap">
 				\(importMapString)
-				</script>
 				<script>
 					// Send JavaScript errors to Swift
 					window.onerror = function(message, source, lineno, colno, error) {
@@ -101,15 +106,10 @@ class BlockViewController {
 
 		// Create the WebPage configuration
 		var config = WebPage.Configuration()
-		let controller = WKUserContentController()
-		config.userContentController = controller
+		config.userContentController = jsController.userContentController
 		config.urlSchemeHandlers = [
 			URLScheme(BundleCache.scheme)!: BundleCache.shared
 		]
-
-		controller.add(jsController, name: "error")
-		controller.add(jsController, name: "loaded")
-		controller.add(jsController, name: "callback")
 
 		// Create and load the WebPage
 		let pg = WebPage(configuration: config, dialogPresenter: jsController)

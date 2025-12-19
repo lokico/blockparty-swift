@@ -316,4 +316,32 @@ struct BlockPartyTests {
 		#expect(addressStr.contains("Springfield"))
 		#expect(addressStr.contains("12345"))
 	}
+
+	@MainActor
+	@Test("AsyncFetcher block with async function callback")
+	func asyncFetcherBlockWithAsyncCallback() async throws {
+		var receivedURL: String?
+		let block = AsyncFetcher(onFetch: { url in
+			receivedURL = url
+			return "Fetched from \(url)"
+		})
+		let controller = BlockViewController()
+		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+
+		// Wait for the async operation to complete
+		try await Task.sleep(for: .milliseconds(500))
+
+		// Verify the result is displayed
+		let resultText = try await controller.page!.callJavaScript(
+			"""
+			const div = document.querySelector('div');
+			return div ? div.textContent : null;
+			"""
+		)
+		#expect(resultText is String)
+		#expect((resultText as! String) == "Result: Fetched from https://example.com")
+
+		// Verify the Swift callback received the correct argument
+		#expect(receivedURL == "https://example.com")
+	}
 }

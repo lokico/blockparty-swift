@@ -3,7 +3,8 @@ import WebKit
 
 /// Controller that manages JavaScript execution and callback registration
 class JSController: NSObject, @MainActor JSEncodingContext,
-	WKScriptMessageHandler, WebPage
+	WKScriptMessageHandler,
+	WKScriptMessageHandlerWithReply, WebPage
 		.DialogPresenting
 {
 	nonisolated(unsafe) var loadedContinuation:
@@ -14,6 +15,19 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 	private var asyncCallbacks: [String: (String) async throws -> String?] =
 		[:]
 	private var nextCallbackId = 0
+
+	/// Gets a `WKUserContentController` that's configured for this `JSController`
+	var userContentController: WKUserContentController {
+		let controller = WKUserContentController()
+		controller.add(self, name: "error")
+		controller.add(self, name: "loaded")
+		controller.addScriptMessageHandler(
+			self,
+			contentWorld: .page,
+			name: "callback"
+		)
+		return controller
+	}
 
 	// MARK: - JSEncodingContext
 
@@ -78,7 +92,17 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 		} else if message.name == "loaded" {
 			loadedContinuation?.resume()
 			loadedContinuation = nil
-		} else if message.name == "callback",
+		}
+	}
+
+	// MARK: - WKScriptMessageHandlerWithReply
+
+	func userContentController(
+		_ userContentController: WKUserContentController,
+		didReceive message: WKScriptMessage,
+		replyHandler: @escaping @MainActor (Any?, String?) -> Void
+	) {
+		if message.name == "callback",
 			let body = message.body as? [String: Any],
 			let callbackId = body["callbackId"] as? String,
 			let argsJSON = body["args"] as? String
@@ -91,12 +115,13 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 			Task {
 				do {
 					let result = try await callback(argsJSON)
-					// FIXME: Return result to JavaScript
+					replyHandler(result ?? NSNull(), nil)
 				} catch {
 					// FIXME: Better logging
 					print(
 						"Async JS callback '\(callbackId)' threw an error: \(error)"
 					)
+					replyHandler(nil, error.localizedDescription)
 				}
 			}
 		}
