@@ -1,7 +1,6 @@
 import Foundation
 
 public struct BlockInstance {
-
 	let blockType: BlockType
 
 	/// A closure that generates the JS expression containing props, given an encoding context
@@ -33,9 +32,5 @@ public struct BlockInstance {
 		props: Props
 	) throws {
 		self.init(type: type, makeProps: props.jsValue)
-	}
-
-	public init<B: Block>(of block: B) throws {
-		try self.init(type: B.blockType, props: block)
 	}
 }

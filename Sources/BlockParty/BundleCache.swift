@@ -17,6 +17,7 @@ public struct CachedResponse: Sendable {
 	}
 
 	public static func upstream(for request: URLRequest) -> CachedResponse {
+		print("WARNING: Unimplemented upstream request for \(request)")
 		fatalError("Not implemented")
 	}
 }
@@ -31,9 +32,13 @@ public final class BundleCache: URLSchemeHandler, Sendable {
 	public func reply(for request: URLRequest) -> CachedResponse {
 		// Reconstruct the canonical URL
 		let requestURL = request.url!
-		let canonicalURL = URL(
-			string: "\(requestURL.host!):\(requestURL.path)"
-		)!
+		let canonicalURL: URL
+
+		if let host = requestURL.host() {
+			canonicalURL = URL(string: "\(host):\(requestURL.path())")!
+		} else {
+			canonicalURL = URL(string: requestURL.path())!
+		}
 
 		// If it's cached, return the cached entry
 		if let cacheEntry = cache.withLock({ $0[canonicalURL] }) {
@@ -68,9 +73,11 @@ public final class BundleCache: URLSchemeHandler, Sendable {
 			}
 		}
 
-		baseURL = URL(
-			string: "\(BundleCache.scheme)://\(baseURL.absoluteString)"
-		)!
+		var urlString = "\(BundleCache.scheme)://\(baseURL.absoluteString)"
+		if !urlString.hasSuffix("/") {
+			urlString.append("/")
+		}
+		baseURL = URL(string: urlString)!
 	}
 
 	/// Load a file from the given bundle and create a CachedURLResponse

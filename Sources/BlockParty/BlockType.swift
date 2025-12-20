@@ -26,3 +26,11 @@ public struct BlockType {
 		self.precache = precache
 	}
 }
+
+extension BlockType: Equatable {
+	public static func == (lhs: BlockType, rhs: BlockType) -> Bool {
+		return lhs.jsPath == rhs.jsPath &&
+			lhs.cssPaths == rhs.cssPaths &&
+			lhs.importMap == rhs.importMap
+	}
+}

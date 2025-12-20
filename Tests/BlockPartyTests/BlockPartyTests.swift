@@ -21,10 +21,14 @@ class TestJSEncodingContext: JSEncodingContext {
 	}
 }
 
+let baseURLs: [URL?] = [
+	URL(string: "http://ajljaskldge.aklnladkj.com")!,
+	URL(string: "https://this.site.should.not.exist.abojdgwa/")!,
+	nil,
+]
+
 @Suite
 struct BlockPartyTests {
-	let baseURL = URL(string: "https://this.site.should.not.exist.abojdgwa/")!
-
 	@Test("BlockInstance encodes props correctly")
 	func blockInstanceEncodesProps() throws {
 		struct TestBlock: Encodable, Block {
@@ -101,8 +105,11 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
-	@Test("BlockView construction with generated blocks")
-	func blockViewConstruction() throws {
+	@Test(
+		"BlockView construction with generated blocks",
+		arguments: baseURLs
+	)
+	func blockViewConstruction(baseURL: URL?) throws {
 		let view = try BlockView(baseURL: baseURL) {
 			Hello_inline(who: "Test", greeting: "Hello")
 		}
@@ -122,7 +129,7 @@ struct BlockPartyTests {
 	{
 		let block = ctor("World", "Greetings")
 		let controller = BlockViewController()
-		await controller.load(block: try block.blockInstance, baseURL: baseURL)
+		await controller.load(block: try block.blockInstance)
 
 		// Execute JavaScript to check if styles are applied
 		let result = try await controller.page!.callJavaScript(
@@ -151,8 +158,8 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
-	@Test("Counter block with function callback")
-	func counterBlockWithFunctionCallback() async throws {
+	@Test("Counter block with function callback", arguments: baseURLs)
+	func counterBlockWithFunctionCallback(baseURL: URL?) async throws {
 		var callCount = 0
 		let block = Counter(count: 5) {
 			callCount += 1
@@ -186,8 +193,11 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
-	@Test("Counter-nested block with nested function callback")
-	func counterNestedBlockWithNestedCallback() async throws {
+	@Test(
+		"Counter-nested block with nested function callback",
+		arguments: baseURLs
+	)
+	func counterNestedBlockWithNestedCallback(baseURL: URL?) async throws {
 		var callCount = 0
 		let block = Counter_nested(
 			count: 7,
@@ -225,9 +235,10 @@ struct BlockPartyTests {
 
 	@MainActor
 	@Test(
-		"Calculator block with function that takes parameters and returns value"
+		"Calculator block with function that takes parameters and returns value",
+		arguments: baseURLs
 	)
-	func calculatorBlockWithFunctionParameters() async throws {
+	func calculatorBlockWithFunctionParameters(baseURL: URL?) async throws {
 		var receivedX: Double?
 		var receivedY: Double?
 		let block = Calculator(onCalculate: { x, y in
@@ -254,8 +265,8 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
-	@Test("User block with nested Encodable type")
-	func userBlockWithNestedEncodableType() async throws {
+	@Test("User block with nested Encodable type", arguments: baseURLs)
+	func userBlockWithNestedEncodableType(baseURL: URL?) async throws {
 		// Verify at compile time that both User and User.Address are Encodable
 		func assertEncodable<T: Encodable>(_: T.Type) {}
 		assertEncodable(User.self)
@@ -318,8 +329,11 @@ struct BlockPartyTests {
 	}
 
 	@MainActor
-	@Test("AsyncFetcher block with async function callback")
-	func asyncFetcherBlockWithAsyncCallback() async throws {
+	@Test(
+		"AsyncFetcher block with async function callback",
+		arguments: baseURLs
+	)
+	func asyncFetcherBlockWithAsyncCallback(baseURL: URL?) async throws {
 		var receivedURL: String?
 		let block = AsyncFetcher(onFetch: { url in
 			receivedURL = url
@@ -339,9 +353,46 @@ struct BlockPartyTests {
 			"""
 		)
 		#expect(resultText is String)
-		#expect((resultText as! String) == "Result: Fetched from https://example.com")
+		#expect(
+			(resultText as! String)
+				== "Result: Fetched from https://example.com"
+		)
 
 		// Verify the Swift callback received the correct argument
 		#expect(receivedURL == "https://example.com")
+	}
+
+	@MainActor
+	@Test("Block props can be updated", arguments: baseURLs)
+	func blockPropsCanBeUpdated(baseURL: URL?) async throws {
+		let controller = BlockViewController()
+
+		// Load initial block
+		let block1 = Hello_inline(who: "World", greeting: "Hello")
+		await controller.load(block: try block1.blockInstance, baseURL: baseURL)
+
+		// Verify initial text
+		let initialText = try await controller.page!.callJavaScript(
+			"""
+			const h1 = document.querySelector('h1');
+			return h1 ? h1.textContent : null;
+			"""
+		)
+		#expect(initialText is String)
+		#expect((initialText as! String) == "Hello, World!")
+
+		// Update the block with new props
+		let block2 = Hello_inline(who: "Swift", greeting: "Greetings")
+		await controller.load(block: try block2.blockInstance, baseURL: baseURL)
+
+		// Verify updated text
+		let updatedText = try await controller.page!.callJavaScript(
+			"""
+			const h1 = document.querySelector('h1');
+			return h1 ? h1.textContent : null;
+			"""
+		)
+		#expect(updatedText is String)
+		#expect((updatedText as! String) == "Greetings, Swift!")
 	}
 }

@@ -5,29 +5,24 @@ import WebKit
 @MainActor
 @Observable
 class BlockViewController {
-	private var loading: Bool = false
-	public private(set) var page: WebPage?
+
+	@MainActor
+	private struct LoadedState {
+		var page: WebPage
+		var blockType: BlockType
+		var jsController: JSController
+	}
+	private var state: LoadedState? = nil
+
+	public var page: WebPage? { state?.page }
 
 	public init() {}
 
-	public func load(block: BlockInstance, baseURL: URL) async {
-		precondition(!loading)
-		loading = true
-		defer { loading = false }
-
-		if let page = page {
-			// FIXME: Update
-			return
-		}
-
+	public func load(block: BlockInstance, baseURL: URL? = nil) async {
 		let ty = block.blockType
-		var baseURL = baseURL
-		BundleCache.shared.precache(blockType: ty, baseURL: &baseURL)
+		let jsController = state?.jsController ?? JSController()
 
-		// Create the JS controller which serves as the encoding context
-		let jsController = JSController()
-
-		// Generate props using the JS controller as context
+		// Generate props using the JSController as context
 		let propsJS: String
 		do {
 			propsJS = try block.makeProps(jsController)
@@ -35,6 +30,26 @@ class BlockViewController {
 			print("Failed to encode props: \(error)")
 			return
 		}
+
+		guard !Task.isCancelled else { return }
+
+		// If the block type is the same as before, we can just update the props
+		if let state = self.state, ty == state.blockType {
+			do {
+				_ = try await state.page.callJavaScript(
+					"""
+					window.__updateProps(\(propsJS));
+					"""
+				)
+				return
+			} catch {
+				print("Failed to update props: \(error)")
+				print("Falling back to reloading the page")
+			}
+		}
+
+		var baseURL = baseURL ?? URL(string: "/")!
+		BundleCache.shared.precache(blockType: ty, baseURL: &baseURL)
 
 		let cssLinks = ty.cssPaths.map { path in
 			"<link rel=\"stylesheet\" href=\"\(path)\">"
@@ -51,6 +66,7 @@ class BlockViewController {
 				+ (try dataToUTF8String(importMapJSON)) + "\n</script>"
 		} catch {
 			print("Failed to encode import map: \(error)")
+			print("Trying without import map")
 			importMapString = ""
 		}
 
@@ -93,7 +109,13 @@ class BlockViewController {
 						const { jsx } = await import("react/jsx-runtime");
 						const { createRoot } = await import("react-dom/client");
 						const Block = (await import("\(ty.jsPath)")).default;
-						createRoot(root).render(jsx(Block, \(propsJS)));
+						const root = createRoot(document.getElementById('root'));
+						root.render(jsx(Block, \(propsJS)));
+
+						// Store update function for Swift to call
+						window.__updateProps = function(newProps) {
+							root.render(jsx(Block, newProps));
+						};
 					} catch (error) {
 						window.reportError(error);
 					} finally {
@@ -111,6 +133,8 @@ class BlockViewController {
 			URLScheme(BundleCache.scheme)!: BundleCache.shared
 		]
 
+		guard !Task.isCancelled else { return }
+
 		// Create and load the WebPage
 		let pg = WebPage(configuration: config, dialogPresenter: jsController)
 
@@ -121,10 +145,12 @@ class BlockViewController {
 			for try await _ in pg.load(html: html, baseURL: baseURL) {
 			}
 		} catch {
-			// FIXME: Handle this better
 			print("Failed to load block: \(error)")
 		}
 		await continuation
-		page = pg
+
+		// Prevent flicker if we're already out of date
+		guard !Task.isCancelled else { return }
+		state = LoadedState(page: pg, blockType: ty, jsController: jsController)
 	}
 }
