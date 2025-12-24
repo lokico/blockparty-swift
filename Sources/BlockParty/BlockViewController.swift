@@ -77,6 +77,25 @@ class BlockViewController {
 				\(cssLinks)
 				\(importMapString)
 				<script>
+					// Helper to safely stringify callback arguments
+					// Handles non-serializable objects like React events
+					window.__safeStringifyArgs = function(args) {
+						try {
+							return JSON.stringify(args.map(arg => {
+								// Try to stringify each argument individually
+								try {
+									JSON.stringify(arg);
+									return arg;
+								} catch {
+									// If it fails (like with circular refs or events), return null
+									return null;
+								}
+							}));
+						} catch {
+							return '[]';
+						}
+					};
+
 					// Send JavaScript errors to Swift
 					window.onerror = function(message, source, lineno, colno, error) {
 						window.webkit.messageHandlers.error.postMessage({

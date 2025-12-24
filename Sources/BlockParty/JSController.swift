@@ -41,7 +41,7 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 		// Return a JavaScript expression that uses prompt to synchronously call Swift
 		return """
 			((...args) => {
-				const result = prompt('\(callbackId)', JSON.stringify(args));
+				const result = prompt('\(callbackId)', __safeStringifyArgs(args));
 				return result ? JSON.parse(result) : undefined;
 			})
 			"""
@@ -59,7 +59,7 @@ class JSController: NSObject, @MainActor JSEncodingContext,
 			(async (...args) => {
 				const result = await window.webkit.messageHandlers.callback.postMessage({
 					callbackId: '\(callbackId)',
-					args: JSON.stringify(args)
+					args: __safeStringifyArgs(args)
 				});
 				return result ? JSON.parse(result) : undefined;
 			})

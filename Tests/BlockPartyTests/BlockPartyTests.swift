@@ -395,4 +395,66 @@ struct BlockPartyTests {
 		#expect(updatedText is String)
 		#expect((updatedText as! String) == "Greetings, Swift!")
 	}
+
+	@MainActor
+	@Test("README example: Counter with optional callback", arguments: baseURLs)
+	func readmeExampleCounter(baseURL: URL?) async throws {
+		// This test uses the exact Counter code from the README
+		var count: Double = 0
+
+		let controller = BlockViewController()
+
+		// Load with callback
+		await controller.load(
+			block: try Counter_readme(
+				count: count,
+				increment: {
+					count += 1
+				}
+			).blockInstance,
+			baseURL: baseURL
+		)
+
+		// Verify initial count
+		let initialText = try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			return button ? button.textContent : null;
+			"""
+		)
+		#expect(initialText is String)
+		#expect((initialText as! String).contains("0 times"))
+
+		// Click button
+		try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			button.click();
+			"""
+		)
+
+		try await Task.sleep(for: .milliseconds(100))
+		#expect(count == 1)
+
+		// Update with new count
+		await controller.load(
+			block: try Counter_readme(
+				count: count,
+				increment: {
+					count += 1
+				}
+			).blockInstance,
+			baseURL: baseURL
+		)
+
+		// Verify updated count
+		let updatedText = try await controller.page!.callJavaScript(
+			"""
+			const button = document.querySelector('button');
+			return button ? button.textContent : null;
+			"""
+		)
+		#expect(updatedText is String)
+		#expect((updatedText as! String).contains("1 times"))
+	}
 }
