@@ -18,12 +18,84 @@ struct BlockMetadata: Decodable {
 	}
 }
 
+enum PropType: Decodable {
+	case primitive(syntax: String)
+	case object(syntax: String, properties: [PropDefinition])
+	case function(syntax: String, parameters: [PropDefinition])
+	case union(syntax: String, types: [PropType])
+	case constant(syntax: String, value: Any)
+	indirect case array(syntax: String, elementType: PropType)
+	case tuple(syntax: String, types: [PropType])
+
+	enum CodingKeys: String, CodingKey {
+		case kind, syntax, properties, parameters, types, value, elementType
+	}
+
+	init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		let kind = try container.decode(String.self, forKey: .kind)
+		let syntax = try container.decode(String.self, forKey: .syntax)
+
+		switch kind {
+		case "primitive":
+			self = .primitive(syntax: syntax)
+		case "object":
+			let properties = try container.decode(
+				[PropDefinition].self,
+				forKey: .properties
+			)
+			self = .object(syntax: syntax, properties: properties)
+		case "function":
+			let parameters = try container.decode(
+				[PropDefinition].self,
+				forKey: .parameters
+			)
+			self = .function(syntax: syntax, parameters: parameters)
+		case "union":
+			let types = try container.decode([PropType].self, forKey: .types)
+			self = .union(syntax: syntax, types: types)
+		case "constant":
+			let value = try JSONSerialization.jsonObject(
+				with: Data(syntax.utf8),
+				options: [.fragmentsAllowed]
+			)
+			self = .constant(syntax: syntax, value: value)
+		case "array":
+			let elementType = try container.decode(
+				PropType.self,
+				forKey: .elementType
+			)
+			self = .array(syntax: syntax, elementType: elementType)
+		case "tuple":
+			let types = try container.decode([PropType].self, forKey: .types)
+			self = .tuple(syntax: syntax, types: types)
+		default:
+			throw DecodingError.dataCorruptedError(
+				forKey: .kind,
+				in: container,
+				debugDescription: "Unknown kind: \(kind)"
+			)
+		}
+	}
+
+	var syntax: String {
+		switch self {
+		case .primitive(let syntax),
+			.object(let syntax, _),
+			.function(let syntax, _),
+			.union(let syntax, _),
+			.constant(let syntax, _),
+			.array(let syntax, _),
+			.tuple(let syntax, _):
+			return syntax
+		}
+	}
+}
+
 struct PropDefinition: Decodable {
 	let name: String
-	let type: String
+	let type: PropType
 	let optional: Bool
-	let properties: [PropDefinition]?
-	let parameters: [PropDefinition]?
 	let description: String?
 }
 
@@ -241,11 +313,10 @@ struct BlockPartyTool {
 	}
 
 	struct MappedType {
+		let propType: PropType
 		let swiftType: String
 		let isEncodable: Bool
 		let isOptional: Bool
-		let isFunction: Bool
-		let isNestedObject: Bool
 	}
 
 	struct StructInfo {
@@ -269,7 +340,7 @@ struct BlockPartyTool {
 
 		// First pass: recursively generate nested structs for properties with nested properties
 		for prop in properties {
-			if let nestedProps = prop.properties {
+			if case .object(_, let nestedProps) = prop.type {
 				let nestedStructName =
 					swiftIdentifier(for: prop.name).prefix(1).uppercased()
 					+ swiftIdentifier(for: prop.name).dropFirst()
@@ -286,7 +357,7 @@ struct BlockPartyTool {
 		// Second pass: map all properties
 		for prop in properties {
 			let mapped: MappedType
-			if prop.properties != nil {
+			if case .object = prop.type {
 				// This is a nested object type - use the generated struct name
 				let nestedStructName =
 					swiftIdentifier(for: prop.name).prefix(1).uppercased()
@@ -295,18 +366,16 @@ struct BlockPartyTool {
 					$0.name == nestedStructName
 				}!
 				mapped = MappedType(
+					propType: prop.type,
 					swiftType: String(nestedStructName)
 						+ (prop.optional ? "?" : ""),
 					isEncodable: nestedInfo.isEncodable,
 					isOptional: prop.optional,
-					isFunction: false,
-					isNestedObject: true
 				)
 			} else {
 				mapped = mapTypeScriptTypeToSwift(
 					prop.type,
-					isOptional: prop.optional,
-					parameters: prop.parameters
+					isOptional: prop.optional
 				)
 			}
 			isEncodable = isEncodable && mapped.isEncodable
@@ -343,7 +412,10 @@ struct BlockPartyTool {
 		for (index, (prop, mapped)) in mappedProps.enumerated() {
 			let comma = index < mappedProps.count - 1 ? "," : ""
 			let escaping =
-				mapped.isFunction && !mapped.isOptional ? "@escaping " : ""
+				if case .function = mapped.propType, !mapped.isOptional {
+					"@escaping "
+				} else { "" }
+
 			code +=
 				"\(indent)\t\(swiftIdentifier(for: prop.name)): \(escaping)\(mapped.swiftType)\(comma)\n"
 		}
@@ -403,8 +475,7 @@ struct BlockPartyTool {
 			let paramTypes = params.map { param in
 				mapTypeScriptTypeToSwift(
 					param.type,
-					isOptional: param.optional,
-					parameters: param.parameters
+					isOptional: param.optional
 				).swiftType
 			}.joined(separator: ", ")
 
@@ -448,22 +519,20 @@ struct BlockPartyTool {
 		code += "\(indent)\tvar jsExpr = \"{\"\n"
 		for (index, (prop, mapped)) in mappedProps.enumerated() {
 			let propName = swiftIdentifier(for: prop.name)
-			let isFunction = mapped.isFunction
-			let isNestedObject = mapped.isNestedObject
-
 			if index > 0 {
 				code += "\(indent)\tjsExpr += \",\"\n"
 			}
 			code += "\(indent)\tjsExpr += \"\\\"\(prop.name)\\\":\"\n"
 
-			if isFunction {
+			switch mapped.propType {
+			case .function(_, let parameters):
 				if mapped.isOptional {
 					code += "\(indent)\tif let \(propName)Fn = \(propName) {\n"
 					code += "\(indent)\t\tjsExpr += "
 					code += generateFunctionCallback(
 						propName: "\(propName)Fn",
 						mapped: mapped,
-						parameters: prop.parameters,
+						parameters: parameters,
 						indent: "\(indent)\t\t"
 					)
 					code += "\(indent)\t} else {\n"
@@ -474,11 +543,11 @@ struct BlockPartyTool {
 					code += generateFunctionCallback(
 						propName: propName,
 						mapped: mapped,
-						parameters: prop.parameters,
+						parameters: parameters,
 						indent: "\(indent)\t"
 					)
 				}
-			} else if isNestedObject {
+			case .object:
 				// Nested object - call its jsValue method
 				if mapped.isOptional {
 					code += "\(indent)\tif let \(propName)Val = \(propName) {\n"
@@ -491,7 +560,7 @@ struct BlockPartyTool {
 					code +=
 						"\(indent)\tjsExpr += try \(propName).jsValue(context: context)\n"
 				}
-			} else {
+			default:
 				// Regular Encodable property
 				code +=
 					"\(indent)\tjsExpr += try BlockParty.dataToUTF8String(encoder.encode(\(propName)))\n"
@@ -553,118 +622,147 @@ struct BlockPartyTool {
 		)
 	}
 
-	static func mapTypeScriptTypeToSwift<S: StringProtocol>(
-		_ tsType: S,
-		isOptional: Bool,
-		parameters: [PropDefinition]?
+	static func mapPrimitiveTypeToSwift(_ typeStr: String) -> String {
+		let cleanType = typeStr.trimmingCharacters(in: .whitespaces)
+		switch cleanType {
+		case "string":
+			return "String"
+		case "number":
+			return "Double"
+		case "boolean":
+			return "Bool"
+		case "any":
+			return "Any"
+		case "void", "undefined", "null":
+			return "Void"
+		default:
+			return cleanType
+		}
+	}
+
+	static func mapTypeScriptTypeToSwift(
+		_ propType: PropType,
+		isOptional: Bool
 	)
 		-> MappedType
 	{
 		var isEncodable = true
 		var isFunction = false
 		var mappedType: String
-		let cleanType = tsType.trimmingCharacters(in: .whitespaces)
 
-		// Handle parts wrapped in parentheses first
-		if cleanType.hasPrefix("(") && cleanType.hasSuffix(")") {
-			let mapped = mapTypeScriptTypeToSwift(
-				cleanType.dropFirst().dropLast(),
-				isOptional: false,
-				parameters: parameters
-			)
-			isEncodable = isEncodable && mapped.isEncodable
-			isFunction = mapped.isFunction
-			mappedType = "(\(mapped.swiftType))"
-		} else {
-			switch cleanType {
-			case "string":
-				mappedType = "String"
-			case "number":
-				mappedType = "Double"
-			case "boolean":
-				mappedType = "Bool"
-			case "any":
-				mappedType = "Any"
-			case "void", "undefined", "null":
-				mappedType = "Void"
-			default:
-				if cleanType.contains("|") && cleanType.contains("undefined") {
-					// Handle union types with undefined (e.g., "string | undefined")
-					let parts = cleanType.split(separator: "|").map {
-						$0.trimmingCharacters(in: .whitespaces)
-					}
-					if let nonUndefinedType = parts.first(where: {
-						$0 != "undefined"
-					}) {
-						return mapTypeScriptTypeToSwift(
-							nonUndefinedType,
-							isOptional: true,
-							parameters: parameters
-						)
-					}
-				}
-				if let params = parameters {
-					// Handle function types (e.g., "(x: number, y: number) => number")
-					isEncodable = false
-					isFunction = true
+		switch propType {
+		case .primitive(let syntax):
+			mappedType = mapPrimitiveTypeToSwift(syntax)
 
-					let paramTypes = params.map { param in
-						mapTypeScriptTypeToSwift(
-							param.type,
-							isOptional: param.optional,
-							parameters: param.parameters
-						).swiftType
-					}
+		case .function(let syntax, let parameters):
+			// Handle function types
+			isEncodable = false
+			isFunction = true
 
-					// Get return type by parsing after =>
-					let parts = cleanType.split(separator: "=>", maxSplits: 1)
-					let returnType: String
-					let isAsync: Bool
-					if parts.count == 2 {
-						let returnTypeStr = parts[1].trimmingCharacters(
-							in: .whitespaces
-						)
-						// Check if return type is Promise<T>
-						if returnTypeStr.hasPrefix("Promise<")
-							&& returnTypeStr.hasSuffix(">")
-						{
-							isAsync = true
-							// Extract T from Promise<T>
-							let innerType = returnTypeStr.dropFirst(
-								"Promise<".count
-							).dropLast()
-							let returnTypeMapped = mapTypeScriptTypeToSwift(
-								innerType,
-								isOptional: false,
-								parameters: nil
-							)
-							returnType = returnTypeMapped.swiftType
-						} else {
-							isAsync = false
-							let returnTypeMapped = mapTypeScriptTypeToSwift(
-								parts[1],
-								isOptional: false,
-								parameters: nil
-							)
-							returnType = returnTypeMapped.swiftType
-						}
-					} else {
-						isAsync = false
-						returnType = "Void"
-					}
-
-					// Build Swift function type without parameter labels
-					let asyncKeyword = isAsync ? " async" : ""
-					if paramTypes.isEmpty {
-						mappedType = "()\(asyncKeyword) -> \(returnType)"
-					} else {
-						mappedType =
-							"(\(paramTypes.joined(separator: ", ")))\(asyncKeyword) -> \(returnType)"
-					}
-				} else {
-					mappedType = String(cleanType)
-				}
+			let paramTypes = parameters.map { param in
+				mapTypeScriptTypeToSwift(
+					param.type,
+					isOptional: param.optional
+				).swiftType
 			}
+
+			// Parse return type from syntax (after =>)
+			// First strip outer parentheses if present: (() => void) -> () => void
+			var cleanType = syntax.trimmingCharacters(in: .whitespaces)
+			if cleanType.hasPrefix("(") && cleanType.hasSuffix(")") {
+				cleanType = String(cleanType.dropFirst().dropLast())
+					.trimmingCharacters(in: .whitespaces)
+			}
+
+			let parts = cleanType.split(separator: "=>", maxSplits: 1)
+			let returnType: String
+			let isAsync: Bool
+			if parts.count == 2 {
+				var returnTypeStr = parts[1].trimmingCharacters(
+					in: .whitespaces
+				)
+				// Strip trailing parenthesis if present
+				if returnTypeStr.hasSuffix(")") && !returnTypeStr.contains("(")
+				{
+					returnTypeStr = String(returnTypeStr.dropLast())
+						.trimmingCharacters(in: .whitespaces)
+				}
+				// Check if return type is Promise<T>
+				if returnTypeStr.hasPrefix("Promise<")
+					&& returnTypeStr.hasSuffix(">")
+				{
+					isAsync = true
+					// Extract T from Promise<T>
+					let innerType = returnTypeStr.dropFirst(
+						"Promise<".count
+					).dropLast()
+					returnType = mapPrimitiveTypeToSwift(String(innerType))
+				} else {
+					isAsync = false
+					returnType = mapPrimitiveTypeToSwift(returnTypeStr)
+				}
+			} else {
+				isAsync = false
+				returnType = "Void"
+			}
+
+			// Build Swift function type without parameter labels
+			let asyncKeyword = isAsync ? " async" : ""
+			if paramTypes.isEmpty {
+				mappedType = "()\(asyncKeyword) -> \(returnType)"
+			} else {
+				mappedType =
+					"(\(paramTypes.joined(separator: ", ")))\(asyncKeyword) -> \(returnType)"
+			}
+
+		case .union(let syntax, let types):
+			// Filter out undefined types
+			let nonUndefinedTypes = types.filter { type in
+				if case .primitive(let syn) = type, syn == "undefined" {
+					return false
+				}
+				return true
+			}
+
+			if nonUndefinedTypes.count < types.count {
+				if nonUndefinedTypes.count == 1 {
+					// Single type with undefined - map it as optional
+					return mapTypeScriptTypeToSwift(
+						nonUndefinedTypes[0],
+						isOptional: true
+					)
+				} else {
+					// Multiple types with undefined - create a union without undefined and map as optional
+					let newSyntax = nonUndefinedTypes.map { $0.syntax }.joined(
+						separator: " | "
+					)
+					let newUnion = PropType.union(
+						syntax: newSyntax,
+						types: nonUndefinedTypes
+					)
+					return mapTypeScriptTypeToSwift(newUnion, isOptional: true)
+				}
+			} else {
+				// No undefined in union, just use the syntax
+				mappedType = syntax
+			}
+
+		case .constant(let syntax, _):
+			// Constants are typically string literals, use the syntax
+			mappedType = syntax
+
+		case .array(let syntax, _):
+			// Use the syntax which should be something like "Type[]"
+			mappedType = syntax
+
+		case .tuple(let syntax, _):
+			// Use the syntax which should be something like "[Type1, Type2]"
+			mappedType = syntax
+
+		case .object(let syntax, _):
+			// Object types should be handled separately as nested structs
+			// This shouldn't typically be reached
+			mappedType = syntax
 		}
 
 		if isOptional {
@@ -678,11 +776,10 @@ struct BlockPartyTool {
 		}
 
 		return MappedType(
+			propType: propType,
 			swiftType: mappedType,
 			isEncodable: isEncodable,
 			isOptional: isOptional,
-			isFunction: isFunction,
-			isNestedObject: false
 		)
 	}
 

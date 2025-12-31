@@ -2,8 +2,8 @@
 	"name": "blockparty-swift",
 	"description":
 	    "This package just supports building the Blocks dir for the tests",
-	"version": "0.0.1",
+	"version": "1.0.0",
 	"devDependencies": {
-		"blockparty": "0.2.0"
+		"blockparty": "1.0.0"
 	}
 }
