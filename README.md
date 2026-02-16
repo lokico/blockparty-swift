@@ -39,7 +39,7 @@ Create a `package.json` in your project root:
   "name": "your-project",
   "version": "0.0.1",
   "devDependencies": {
-    "blockparty": "0.2.0"
+    "blockparty": "1.0.0"
   }
 }
 ```
